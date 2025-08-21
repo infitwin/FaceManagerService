@@ -22,7 +22,6 @@ steps:
       - 'managed'
       - '--allow-unauthenticated'
       - '--update-secrets=FIREBASE_API_KEY=FIREBASE_API_KEY:latest,FIREBASE_APP_ID=FIREBASE_APP_ID:latest,FIREBASE_CREDENTIALS=FIREBASE_CREDENTIALS:latest'
-      - '--update-env-vars=FIREBASE_PROJECT_ID=infitwin'
 
 images:
   - 'gcr.io/$PROJECT_ID/facemanagerservice'
