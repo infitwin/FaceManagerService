@@ -21,8 +21,7 @@ steps:
       - '--platform'
       - 'managed'
       - '--allow-unauthenticated'
-      - '--set-env-vars'
-      - 'NODE_ENV=production'
+      - '--update-secrets=FIREBASE_API_KEY=FIREBASE_API_KEY:latest,FIREBASE_APP_ID=FIREBASE_APP_ID:latest,FIREBASE_CREDENTIALS=FIREBASE_CREDENTIALS:latest'
 
 images:
   - 'gcr.io/$PROJECT_ID/facemanagerservice'

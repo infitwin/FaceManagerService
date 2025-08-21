@@ -42,14 +42,13 @@ COPY firebase-credentials.json ./
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=8082
 
-# Expose port
-EXPOSE 8082
+# Expose port (Cloud Run expects 8080)
+EXPOSE 8080
 
-# Health check
+# Health check - use PORT environment variable from Cloud Run
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:8082/health', (r) => {r.statusCode === 200 ? process.exit(0) : process.exit(1)})"
+  CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 8080) + '/health', (r) => {r.statusCode === 200 ? process.exit(0) : process.exit(1)})"
 
 # Start the application
 CMD ["node", "dist/index.js"]
