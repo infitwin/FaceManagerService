@@ -213,6 +213,44 @@ router.get('/groups/:userId/:groupId', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/groups/:userId
+ * Create a new group with faces
+ */
+router.post('/groups/:userId', async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const { faces, groupName } = req.body;
+    
+    if (!faces || !Array.isArray(faces) || faces.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one face is required to create a group'
+      });
+    }
+    
+    console.log(`\n🎯 Creating new group for user ${userId} with ${faces.length} faces`);
+    
+    // Create the group using the group manager
+    const groupId = await groupManager.createGroupWithFaces(userId, faces, groupName);
+    
+    // Get the created group
+    const group = await groupManager.getGroup(userId, groupId);
+    
+    res.json({
+      success: true,
+      group,
+      message: `Successfully created group with ${faces.length} faces`
+    });
+  } catch (error: any) {
+    console.error('Error creating group:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to create group'
+    });
+  }
+});
+
+/**
  * POST /api/groups/:userId/merge
  * Merge multiple groups
  */

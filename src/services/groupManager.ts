@@ -291,6 +291,33 @@ export class GroupManager {
   }
 
   /**
+   * Create a new group with specific faces (public method for API)
+   */
+  async createGroupWithFaces(userId: string, faces: any[], groupName?: string): Promise<string> {
+    // Extract face IDs and file IDs
+    const faceIds = faces.map(f => f.faceId);
+    const fileIds = [...new Set(faces.map(f => f.fileId).filter(Boolean))];
+    
+    const groupId = this.generateGroupId();
+    const groupRef = this.db.collection('users').doc(userId)
+                           .collection('faceGroups').doc(groupId);
+    
+    const groupData: Partial<FaceGroup> = {
+      groupId,
+      groupName: groupName || `Group ${groupId.substring(0, 8)}`,
+      faceIds,
+      fileIds: fileIds.length > 0 ? fileIds : ['manual'],
+      faceCount: faceIds.length,
+      createdAt: FieldValue.serverTimestamp() as any,
+      updatedAt: FieldValue.serverTimestamp() as any
+    };
+    
+    await groupRef.set(groupData);
+    console.log(`✅ Created group ${groupId} with ${faceIds.length} faces`);
+    return groupId;
+  }
+
+  /**
    * Delete a specific group
    */
   async deleteGroup(userId: string, groupId: string): Promise<boolean> {
