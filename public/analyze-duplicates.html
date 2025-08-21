@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Analyze Duplicates</title>
+    <style>
+        .duplicate { background: #ffcccc; }
+        .unique { background: #ccffcc; }
+        pre { background: #f0f0f0; padding: 10px; }
+    </style>
+</head>
+<body>
+    <h1>Analyzing Face Groups for Duplicates</h1>
+    <button onclick="analyzePage()">Analyze Face Groups Page</button>
+    <div id="results"></div>
+    
+    <iframe id="faceGroupsFrame" src="http://localhost:8083/face-groups-ui.html" width="100%" height="600" style="border: 1px solid #ccc;"></iframe>
+    
+    <script>
+        function analyzePage() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<h2>Analysis Results:</h2>';
+            
+            try {
+                const iframe = document.getElementById('faceGroupsFrame');
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                
+                // Find all face elements
+                const allFaces = iframeDoc.querySelectorAll('[data-face-id]');
+                const faceOccurrences = {};
+                const faceLocations = {};
+                
+                allFaces.forEach(face => {
+                    const faceId = face.dataset.faceId;
+                    const groupCard = face.closest('.group-card');
+                    const groupId = groupCard ? groupCard.dataset.groupId : 'unknown';
+                    const groupTitle = groupCard ? groupCard.querySelector('.group-title')?.textContent : 'unknown';
+                    
+                    if (!faceOccurrences[faceId]) {
+                        faceOccurrences[faceId] = 0;
+                        faceLocations[faceId] = [];
+                    }
+                    faceOccurrences[faceId]++;
+                    faceLocations[faceId].push({
+                        groupId: groupId,
+                        groupTitle: groupTitle,
+                        element: face
+                    });
+                });
+                
+                // Find all img elements to check for duplicate sources
+                const allImages = iframeDoc.querySelectorAll('.face-image img');
+                const imageSources = {};
+                
+                allImages.forEach(img => {
+                    const src = img.src;
+                    const faceElement = img.closest('[data-face-id]');
+                    const faceId = faceElement ? faceElement.dataset.faceId : 'unknown';
+                    
+                    if (!imageSources[src]) {
+                        imageSources[src] = [];
+                    }
+                    imageSources[src].push(faceId);
+                });
+                
+                // Report duplicates
+                let report = '<h3>Face ID Occurrences:</h3><pre>';
+                let duplicatesFound = false;
+                
+                Object.entries(faceOccurrences).forEach(([faceId, count]) => {
+                    if (count > 1) {
+                        duplicatesFound = true;
+                        report += `<span class="duplicate">DUPLICATE: Face ${faceId} appears ${count} times in:</span>\n`;
+                        faceLocations[faceId].forEach(loc => {
+                            report += `  - ${loc.groupTitle} (Group ID: ${loc.groupId})\n`;
+                            // Highlight the duplicate in the iframe
+                            loc.element.style.border = '3px solid red';
+                        });
+                    } else {
+                        report += `<span class="unique">Face ${faceId}: ${count} occurrence</span>\n`;
+                    }
+                });
+                report += '</pre>';
+                
+                // Check for duplicate image sources
+                report += '<h3>Image Source Analysis:</h3><pre>';
+                let sameImageMultipleFaces = false;
+                Object.entries(imageSources).forEach(([src, faceIds]) => {
+                    if (faceIds.length > 1) {
+                        const uniqueFaceIds = [...new Set(faceIds)];
+                        if (uniqueFaceIds.length > 1) {
+                            sameImageMultipleFaces = true;
+                            report += `<span class="duplicate">SAME IMAGE used for ${faceIds.length} faces:</span>\n`;
+                            report += `  Source: ${src.substring(0, 50)}...\n`;
+                            report += `  Face IDs: ${uniqueFaceIds.join(', ')}\n`;
+                        }
+                    }
+                });
+                report += '</pre>';
+                
+                // Summary
+                report += '<h3>Summary:</h3>';
+                report += `<p>Total faces displayed: ${allFaces.length}</p>`;
+                report += `<p>Unique face IDs: ${Object.keys(faceOccurrences).length}</p>`;
+                report += `<p>Duplicate face IDs found: ${duplicatesFound ? 'YES' : 'NO'}</p>`;
+                report += `<p>Same image used for multiple faces: ${sameImageMultipleFaces ? 'YES' : 'NO'}</p>`;
+                
+                // Check group contents
+                report += '<h3>Group Contents:</h3><pre>';
+                const groups = iframeDoc.querySelectorAll('.group-card');
+                groups.forEach(group => {
+                    const groupTitle = group.querySelector('.group-title')?.textContent;
+                    const faces = group.querySelectorAll('[data-face-id]');
+                    const faceIds = Array.from(faces).map(f => f.dataset.faceId);
+                    const uniqueIds = [...new Set(faceIds)];
+                    
+                    report += `${groupTitle}: ${faces.length} faces\n`;
+                    if (faceIds.length !== uniqueIds.length) {
+                        report += `  <span class="duplicate">DUPLICATES IN GROUP! ${faceIds.length} faces but only ${uniqueIds.length} unique</span>\n`;
+                        report += `  All IDs: ${faceIds.join(', ')}\n`;
+                        report += `  Unique IDs: ${uniqueIds.join(', ')}\n`;
+                    } else {
+                        report += `  Face IDs: ${faceIds.map(id => id.substring(0, 10) + '...').join(', ')}\n`;
+                    }
+                });
+                report += '</pre>';
+                
+                resultsDiv.innerHTML += report;
+                
+            } catch (error) {
+                resultsDiv.innerHTML += `<p style="color: red;">Error: ${error.message}</p>`;
+                resultsDiv.innerHTML += '<p>Note: Due to CORS, cannot access iframe content directly. Please check the browser console.</p>';
+            }
+        }
+        
+        // Auto-analyze after 3 seconds
+        setTimeout(analyzePage, 3000);
+    </script>
+</body>
+</html>

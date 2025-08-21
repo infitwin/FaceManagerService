@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Groups Management - Infitwin</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #f5f7fa;
+            min-height: 100vh;
+        }
+        
+        /* Header */
+        .header {
+            background: white;
+            border-bottom: 1px solid #e5e7eb;
+            padding: 20px 30px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1a1a1a;
+        }
+        
+        .header-stats {
+            display: flex;
+            gap: 30px;
+        }
+        
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #667eea;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        /* Container */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        
+        /* Tabs */
+        .tabs {
+            background: white;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            padding: 8px;
+            display: flex;
+            gap: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .tab {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            background: transparent;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #6b7280;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .tab:hover {
+            background: #f3f4f6;
+        }
+        
+        .tab.active {
+            background: #667eea;
+            color: white;
+        }
+        
+        /* Content Sections */
+        .content-section {
+            display: none;
+        }
+        
+        .content-section.active {
+            display: block;
+        }
+        
+        /* Face Groups Grid */
+        .groups-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+        
+        .group-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .group-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .group-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+        
+        .group-count {
+            background: #667eea;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .faces-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .face-thumbnail {
+            width: 60px;
+            height: 60px;
+            border-radius: 8px;
+            background: #f3f4f6;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .face-thumbnail:hover {
+            border-color: #667eea;
+            transform: scale(1.05);
+        }
+        
+        .face-thumbnail.selected {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+        }
+        
+        .face-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .face-id {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            font-size: 8px;
+            padding: 2px;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .group-actions {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #5468d3;
+        }
+        
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+        }
+        
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+        
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+        
+        /* Unassigned Faces */
+        .unassigned-container {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .unassigned-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .unassigned-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 15px;
+        }
+        
+        .unassigned-face {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .unassigned-face-image {
+            width: 100px;
+            height: 100px;
+            border-radius: 8px;
+            background: #f3f4f6;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .unassigned-face-image:hover {
+            border-color: #667eea;
+            transform: scale(1.05);
+        }
+        
+        .unassigned-face-image.selected {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
+        }
+        
+        .file-info {
+            font-size: 10px;
+            color: #6b7280;
+            text-align: center;
+        }
+        
+        /* Actions Bar */
+        .actions-bar {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .selection-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .selection-count {
+            font-size: 14px;
+            color: #6b7280;
+        }
+        
+        .selection-count strong {
+            color: #667eea;
+        }
+        
+        /* Loading State */
+        .loading {
+            text-align: center;
+            padding: 40px;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6b7280;
+        }
+        
+        .empty-icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+            opacity: 0.3;
+        }
+        
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.active {
+            display: flex;
+        }
+        
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        
+        .modal-header {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+        
+        .modal-body {
+            margin-bottom: 20px;
+        }
+        
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        
+        /* Toast Notifications */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: #10b981;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            display: none;
+            align-items: center;
+            gap: 10px;
+            z-index: 2000;
+        }
+        
+        .toast.show {
+            display: flex;
+            animation: slideIn 0.3s ease;
+        }
+        
+        .toast.error {
+            background: #ef4444;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+            }
+            to {
+                transform: translateX(0);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-content">
+            <h1>👤 Face Groups Management</h1>
+            <div class="header-stats">
+                <div class="stat-item">
+                    <div class="stat-value" id="totalFaces">0</div>
+                    <div class="stat-label">Total Faces</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="totalGroups">0</div>
+                    <div class="stat-label">Groups</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="unassignedCount">0</div>
+                    <div class="stat-label">Unassigned</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Container -->
+    <div class="container">
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" data-tab="groups">Face Groups</button>
+            <button class="tab" data-tab="unassigned">Unassigned Faces</button>
+            <button class="tab" data-tab="files">By Files</button>
+        </div>
+        
+        <!-- Actions Bar -->
+        <div class="actions-bar">
+            <div class="selection-info">
+                <span class="selection-count">
+                    <strong id="selectedCount">0</strong> faces selected
+                </span>
+                <button class="btn btn-secondary" onclick="clearSelection()">Clear Selection</button>
+            </div>
+            <div>
+                <button class="btn btn-primary" onclick="createNewGroup()">Create Group</button>
+                <button class="btn btn-secondary" onclick="mergeGroups()">Merge Groups</button>
+                <button class="btn btn-secondary" onclick="refreshData()">🔄 Refresh</button>
+                <button class="btn btn-danger" onclick="resetAllGroups()">Reset All</button>
+            </div>
+        </div>
+        
+        <!-- Content Sections -->
+        <!-- Face Groups -->
+        <div class="content-section active" id="groups-section">
+            <div class="groups-grid" id="groupsGrid">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading face groups...</p>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Unassigned Faces -->
+        <div class="content-section" id="unassigned-section">
+            <div class="unassigned-container">
+                <div class="unassigned-header">
+                    <h2>Unassigned Faces</h2>
+                    <button class="btn btn-primary" onclick="assignSelectedFaces()">
+                        Assign to Group
+                    </button>
+                </div>
+                <div class="unassigned-grid" id="unassignedGrid">
+                    <div class="empty-state">
+                        <div class="empty-icon">🎉</div>
+                        <p>No unassigned faces!</p>
+                        <p>All faces have been grouped.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Files View -->
+        <div class="content-section" id="files-section">
+            <div class="files-container" id="filesContainer">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading files...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal -->
+    <div class="modal" id="modal">
+        <div class="modal-content">
+            <div class="modal-header" id="modalTitle">Modal Title</div>
+            <div class="modal-body" id="modalBody">Modal Content</div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" id="modalConfirm">Confirm</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Toast Notifications -->
+    <div class="toast" id="toast">
+        <span id="toastMessage">Message</span>
+    </div>
+    
+    <script src="get-firebase-urls.js"></script>
+    <script src="face-groups-app.js"></script>
+</body>
+</html>

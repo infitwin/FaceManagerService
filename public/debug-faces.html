@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Face Loading</title>
+    <style>
+        .face-test {
+            display: inline-block;
+            margin: 10px;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+        canvas {
+            border: 1px solid blue;
+        }
+    </style>
+</head>
+<body>
+    <h1>Debug Face Extraction</h1>
+    <div id="results"></div>
+    
+    <script>
+        // Test face extraction with real data
+        const testFaces = [
+            {
+                faceId: '124772bc-4cd4-45c0-bd73-8df39f4869fa',
+                fileId: 'file_1755659985239_7le2TjzJGZ',
+                boundingBox: {
+                    "Width": 0.09988665580749512,
+                    "Left": 0.25272107124328613,
+                    "Top": 0.3563266396522522,
+                    "Height": 0.17588859796524048
+                }
+            },
+            {
+                faceId: '141ea1c0-d238-43ee-b634-334cec2941f9',
+                fileId: 'file_1755659985239_7le2TjzJGZ',
+                boundingBox: {
+                    "Width": 0.09364288300275803,
+                    "Left": 0.6943272352218628,
+                    "Top": 0.3971301019191742,
+                    "Height": 0.15861649811267853
+                }
+            }
+        ];
+        
+        async function getImageUrls() {
+            const response = await fetch('http://localhost:8082/api/files-with-faces/zsvLTeIPJUYGnZHzWX7hVtLJlJX2');
+            const data = await response.json();
+            const urlMap = {};
+            data.files.forEach(file => {
+                urlMap[file.fileId] = file.url;
+            });
+            return urlMap;
+        }
+        
+        async function extractFace(imageUrl, boundingBox) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Convert percentage to pixels
+                    const x = (boundingBox.Left || 0) * img.width;
+                    const y = (boundingBox.Top || 0) * img.height;
+                    const width = (boundingBox.Width || 0) * img.width;
+                    const height = (boundingBox.Height || 0) * img.height;
+                    
+                    canvas.width = 150;
+                    canvas.height = 150;
+                    
+                    // Draw the face
+                    ctx.drawImage(img, x, y, width, height, 0, 0, 150, 150);
+                    
+                    resolve({canvas, dataUrl: canvas.toDataURL('image/jpeg', 0.9)});
+                };
+                
+                img.onerror = () => reject(new Error('Failed to load image'));
+                img.src = imageUrl;
+            });
+        }
+        
+        async function testExtraction() {
+            const resultsDiv = document.getElementById('results');
+            const urls = await getImageUrls();
+            
+            for (const face of testFaces) {
+                const imageUrl = urls[face.fileId];
+                if (!imageUrl) {
+                    resultsDiv.innerHTML += `<p>No URL for ${face.fileId}</p>`;
+                    continue;
+                }
+                
+                try {
+                    const result = await extractFace(imageUrl, face.boundingBox);
+                    
+                    const div = document.createElement('div');
+                    div.className = 'face-test';
+                    div.innerHTML = `
+                        <h3>Face: ${face.faceId.substring(0, 10)}...</h3>
+                        <p>File: ${face.fileId.substring(0, 20)}...</p>
+                        <p>URL: ${imageUrl.substring(0, 50)}...</p>
+                        <p>Bounding Box: ${JSON.stringify(face.boundingBox)}</p>
+                    `;
+                    div.appendChild(result.canvas);
+                    
+                    resultsDiv.appendChild(div);
+                } catch (error) {
+                    resultsDiv.innerHTML += `<p style="color: red;">Error extracting ${face.faceId}: ${error.message}</p>`;
+                }
+            }
+        }
+        
+        testExtraction();
+    </script>
+</body>
+</html>

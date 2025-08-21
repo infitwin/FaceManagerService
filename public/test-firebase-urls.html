@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Firebase Storage URLs</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        .image-test {
+            margin: 20px 0;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+        .image-container {
+            width: 200px;
+            height: 200px;
+            border: 1px solid #999;
+            display: inline-block;
+            margin: 10px;
+        }
+        img {
+            max-width: 100%;
+            max-height: 100%;
+        }
+        .status {
+            margin-top: 10px;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>Testing Firebase Storage URLs</h1>
+    
+    <div id="test-results"></div>
+    
+    <script>
+        const USER_ID = 'zsvLTeIPJUYGnZHzWX7hVtLJlJX2';
+        const FILE_IDS = [
+            'file_1755659985239_7le2TjzJGZ',
+            'file_1755659986536_HA8cvhthi5',
+            'file_1755659987594_8VOMGbAoEd',
+            'file_1755659988640_Pa68yHCb0p',
+            'file_1755659989503_eavQhJ2RmP'
+        ];
+        
+        const container = document.getElementById('test-results');
+        
+        FILE_IDS.forEach(fileId => {
+            const div = document.createElement('div');
+            div.className = 'image-test';
+            
+            // Test Firebase Storage URL
+            const storageUrl = `https://firebasestorage.googleapis.com/v0/b/infitwin.appspot.com/o/users%2F${USER_ID}%2Ffiles%2F${fileId}?alt=media`;
+            
+            div.innerHTML = `
+                <h3>File: ${fileId}</h3>
+                <p>URL: <code>${storageUrl}</code></p>
+                <div class="image-container">
+                    <img src="${storageUrl}" 
+                         onload="this.parentElement.nextElementSibling.className='status success'; this.parentElement.nextElementSibling.textContent='✓ Image loaded successfully';"
+                         onerror="this.parentElement.nextElementSibling.className='status error'; this.parentElement.nextElementSibling.textContent='✗ Failed to load image: ' + this.src;">
+                </div>
+                <div class="status">Loading...</div>
+            `;
+            
+            container.appendChild(div);
+        });
+        
+        // Also test a simple fetch
+        FILE_IDS.forEach(async fileId => {
+            const url = `https://firebasestorage.googleapis.com/v0/b/infitwin.appspot.com/o/users%2F${USER_ID}%2Ffiles%2F${fileId}?alt=media`;
+            try {
+                const response = await fetch(url, { method: 'HEAD' });
+                console.log(`${fileId}: HTTP ${response.status} - ${response.ok ? 'OK' : 'FAILED'}`);
+            } catch (error) {
+                console.error(`${fileId}: Network error -`, error.message);
+            }
+        });
+    </script>
+</body>
+</html>

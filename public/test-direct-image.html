@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Direct Image Test</title>
+</head>
+<body>
+    <h1>Testing Direct Firebase Storage Access</h1>
+    
+    <h2>Test 1: Direct IMG tag</h2>
+    <img src="https://firebasestorage.googleapis.com/v0/b/infitwin.appspot.com/o/users%2FzsvLTeIPJUYGnZHzWX7hVtLJlJX2%2Ffiles%2Ffile_1755659985239_7le2TjzJGZ?alt=media" 
+         width="300" 
+         onload="console.log('Direct image loaded!');" 
+         onerror="console.error('Direct image failed to load');">
+    
+    <h2>Test 2: Dynamic Load</h2>
+    <div id="dynamic-test"></div>
+    
+    <script>
+        // Test dynamic image loading
+        const testUrl = 'https://firebasestorage.googleapis.com/v0/b/infitwin.appspot.com/o/users%2FzsvLTeIPJUYGnZHzWX7hVtLJlJX2%2Ffiles%2Ffile_1755659985239_7le2TjzJGZ?alt=media';
+        
+        const img = document.createElement('img');
+        img.src = testUrl;
+        img.width = 300;
+        img.onload = () => {
+            console.log('Dynamic image loaded successfully!');
+            document.getElementById('dynamic-test').appendChild(img);
+        };
+        img.onerror = (e) => {
+            console.error('Dynamic image failed:', e);
+            document.getElementById('dynamic-test').innerHTML = '<p style="color: red;">Failed to load image</p>';
+        };
+        
+        // Also test with fetch
+        fetch(testUrl)
+            .then(response => {
+                console.log('Fetch response:', response.status, response.statusText);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.blob();
+            })
+            .then(blob => {
+                console.log('Image blob received, size:', blob.size);
+                const blobUrl = URL.createObjectURL(blob);
+                const img2 = document.createElement('img');
+                img2.src = blobUrl;
+                img2.width = 300;
+                document.getElementById('dynamic-test').appendChild(img2);
+            })
+            .catch(error => {
+                console.error('Fetch error:', error);
+            });
+    </script>
+</body>
+</html>

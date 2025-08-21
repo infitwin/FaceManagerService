@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Group Deletion</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .test-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .info {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        button {
+            padding: 8px 16px;
+            margin: 5px;
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            background: #007bff;
+            color: white;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .face-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .face-item {
+            width: 80px;
+            height: 80px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .face-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .group-item {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #f8f9fa;
+        }
+        pre {
+            background: #f4f4f4;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Face Group Deletion Test</h1>
+    
+    <div class="test-section">
+        <h2>Test Status</h2>
+        <div id="testStatus"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Current Groups</h2>
+        <button onclick="loadGroups()">Refresh Groups</button>
+        <div id="groupsList"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Unassigned Faces</h2>
+        <button onclick="loadUnassignedFaces()">Refresh Unassigned</button>
+        <div id="unassignedFaces"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Results</h2>
+        <button onclick="runDeletionTest()">Run Deletion Test</button>
+        <div id="testResults"></div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8082/api';
+        const UI_API_BASE_URL = 'http://localhost:8083/api';
+        const USER_ID = 'zsvLTeIPJUYGnZHzWX7hVtLJlJX2';
+        const FIREBASE_STORAGE_BASE = 'https://firebasestorage.googleapis.com/v0/b/infitwin.firebasestorage.app/o/';
+
+        let faceDataCache = {};
+        let currentGroups = [];
+
+        function log(message, type = 'info') {
+            const statusDiv = document.getElementById('testStatus');
+            const div = document.createElement('div');
+            div.className = `status ${type}`;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            statusDiv.appendChild(div);
+        }
+
+        async function getStorageUrl(path) {
+            const encPath = encodeURIComponent(path);
+            const url = `${FIREBASE_STORAGE_BASE}${encPath}?alt=media`;
+            return url;
+        }
+
+        async function extractFaceImage(imageUrl, boundingBox) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    
+                    const x = Math.floor(boundingBox.Left * img.width);
+                    const y = Math.floor(boundingBox.Top * img.height);
+                    const width = Math.floor(boundingBox.Width * img.width);
+                    const height = Math.floor(boundingBox.Height * img.height);
+                    
+                    canvas.width = width;
+                    canvas.height = height;
+                    
+                    ctx.drawImage(img, x, y, width, height, 0, 0, width, height);
+                    resolve(canvas.toDataURL('image/jpeg', 0.9));
+                };
+                
+                img.onerror = reject;
+                img.src = imageUrl;
+            });
+        }
+
+        async function loadFaceData() {
+            try {
+                const response = await fetch(`${UI_API_BASE_URL}/files-with-faces/${USER_ID}`);
+                const data = await response.json();
+                
+                if (!data.success) throw new Error(data.message);
+                
+                // Build face data cache
+                faceDataCache = {};
+                for (const file of data.files) {
+                    const imageUrl = await getStorageUrl(file.storagePath);
+                    
+                    if (file.faces && Array.isArray(file.faces)) {
+                        for (const face of file.faces) {
+                            if (face.faceId && face.boundingBox) {
+                                faceDataCache[face.faceId] = {
+                                    fileId: file.fileId,
+                                    fileName: file.fileName,
+                                    storagePath: file.storagePath,
+                                    boundingBox: face.boundingBox,
+                                    imageUrl: imageUrl,
+                                    faceImage: null // Will be loaded on demand
+                                };
+                            }
+                        }
+                    }
+                }
+                
+                log(`Loaded ${Object.keys(faceDataCache).length} faces from ${data.files.length} files`, 'success');
+                return faceDataCache;
+            } catch (error) {
+                log(`Error loading face data: ${error.message}`, 'error');
+                throw error;
+            }
+        }
+
+        async function loadGroups() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/groups/${USER_ID}`);
+                const data = await response.json();
+                
+                if (!data.success) throw new Error(data.message);
+                
+                currentGroups = data.groups;
+                
+                const groupsDiv = document.getElementById('groupsList');
+                groupsDiv.innerHTML = `<p>Total groups: ${data.groupCount}</p>`;
+                
+                for (const group of data.groups) {
+                    const groupEl = document.createElement('div');
+                    groupEl.className = 'group-item';
+                    groupEl.innerHTML = `
+                        <strong>Group ${group.groupId.split('_')[2]}</strong> 
+                        (${group.faceCount} faces)
+                        <button onclick="deleteGroup('${group.groupId}')">Delete</button>
+                        <div class="face-grid" id="group-${group.groupId}"></div>
+                    `;
+                    groupsDiv.appendChild(groupEl);
+                    
+                    // Load face previews
+                    const faceGrid = document.getElementById(`group-${group.groupId}`);
+                    for (const faceId of group.faceIds.slice(0, 4)) {
+                        if (faceDataCache[faceId]) {
+                            const faceDiv = document.createElement('div');
+                            faceDiv.className = 'face-item';
+                            faceDiv.title = faceId;
+                            
+                            if (!faceDataCache[faceId].faceImage) {
+                                faceDataCache[faceId].faceImage = await extractFaceImage(
+                                    faceDataCache[faceId].imageUrl,
+                                    faceDataCache[faceId].boundingBox
+                                );
+                            }
+                            
+                            faceDiv.innerHTML = `<img src="${faceDataCache[faceId].faceImage}" alt="${faceId}">`;
+                            faceGrid.appendChild(faceDiv);
+                        }
+                    }
+                }
+                
+                log(`Loaded ${data.groupCount} groups`, 'success');
+            } catch (error) {
+                log(`Error loading groups: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadUnassignedFaces() {
+            try {
+                // First load all face data
+                await loadFaceData();
+                
+                // Get all faces in groups
+                const groupedFaceIds = new Set();
+                for (const group of currentGroups) {
+                    for (const faceId of group.faceIds) {
+                        groupedFaceIds.add(faceId);
+                    }
+                }
+                
+                // Find unassigned faces
+                const unassignedFaceIds = Object.keys(faceDataCache).filter(
+                    faceId => !groupedFaceIds.has(faceId)
+                );
+                
+                const unassignedDiv = document.getElementById('unassignedFaces');
+                unassignedDiv.innerHTML = `
+                    <p>Unassigned faces: ${unassignedFaceIds.length}</p>
+                    <div class="face-grid" id="unassignedGrid"></div>
+                `;
+                
+                const grid = document.getElementById('unassignedGrid');
+                for (const faceId of unassignedFaceIds.slice(0, 12)) {
+                    const faceData = faceDataCache[faceId];
+                    if (faceData) {
+                        if (!faceData.faceImage) {
+                            faceData.faceImage = await extractFaceImage(
+                                faceData.imageUrl,
+                                faceData.boundingBox
+                            );
+                        }
+                        
+                        const faceDiv = document.createElement('div');
+                        faceDiv.className = 'face-item';
+                        faceDiv.title = faceId;
+                        faceDiv.innerHTML = `<img src="${faceData.faceImage}" alt="${faceId}">`;
+                        grid.appendChild(faceDiv);
+                    }
+                }
+                
+                log(`Found ${unassignedFaceIds.length} unassigned faces`, 'info');
+            } catch (error) {
+                log(`Error loading unassigned faces: ${error.message}`, 'error');
+            }
+        }
+
+        async function deleteGroup(groupId) {
+            try {
+                log(`Deleting group ${groupId}...`, 'info');
+                
+                // Find faces in this group before deletion
+                const group = currentGroups.find(g => g.groupId === groupId);
+                const facesInGroup = group ? group.faceIds : [];
+                
+                const response = await fetch(`${API_BASE_URL}/groups/${groupId}?userId=${USER_ID}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    log(`Successfully deleted group ${groupId}`, 'success');
+                    log(`Released ${facesInGroup.length} faces back to unassigned`, 'info');
+                    
+                    // Reload both groups and unassigned faces
+                    await loadGroups();
+                    await loadUnassignedFaces();
+                } else {
+                    log(`Failed to delete group: ${data.message}`, 'error');
+                }
+            } catch (error) {
+                log(`Error deleting group: ${error.message}`, 'error');
+            }
+        }
+
+        async function runDeletionTest() {
+            const resultsDiv = document.getElementById('testResults');
+            resultsDiv.innerHTML = '<h3>Running Deletion Test...</h3>';
+            
+            try {
+                // Step 1: Load initial state
+                log('Step 1: Loading initial state...', 'info');
+                await loadFaceData();
+                await loadGroups();
+                
+                const initialGroupCount = currentGroups.length;
+                const initialTotalFaces = currentGroups.reduce((sum, g) => sum + g.faceCount, 0);
+                
+                resultsDiv.innerHTML += `
+                    <p>✓ Initial state: ${initialGroupCount} groups with ${initialTotalFaces} total faces</p>
+                `;
+                
+                // Step 2: Pick a group to delete
+                if (currentGroups.length === 0) {
+                    resultsDiv.innerHTML += '<p>❌ No groups available to test deletion</p>';
+                    return;
+                }
+                
+                const groupToDelete = currentGroups[0];
+                const facesBeforeDeletion = groupToDelete.faceIds;
+                
+                log(`Step 2: Deleting group ${groupToDelete.groupId} with ${facesBeforeDeletion.length} faces`, 'info');
+                resultsDiv.innerHTML += `
+                    <p>→ Deleting group with ${facesBeforeDeletion.length} faces</p>
+                `;
+                
+                // Step 3: Delete the group
+                await deleteGroup(groupToDelete.groupId);
+                
+                // Step 4: Verify deletion
+                await loadGroups();
+                const finalGroupCount = currentGroups.length;
+                
+                if (finalGroupCount === initialGroupCount - 1) {
+                    resultsDiv.innerHTML += '<p>✓ Group count decreased by 1</p>';
+                    log('Group deletion verified', 'success');
+                } else {
+                    resultsDiv.innerHTML += '<p>❌ Group count did not decrease correctly</p>';
+                    log('Group deletion verification failed', 'error');
+                }
+                
+                // Step 5: Check if faces are unassigned
+                const groupedFaceIds = new Set();
+                for (const group of currentGroups) {
+                    for (const faceId of group.faceIds) {
+                        groupedFaceIds.add(faceId);
+                    }
+                }
+                
+                const releasedFaces = facesBeforeDeletion.filter(faceId => !groupedFaceIds.has(faceId));
+                
+                if (releasedFaces.length === facesBeforeDeletion.length) {
+                    resultsDiv.innerHTML += `<p>✓ All ${releasedFaces.length} faces returned to unassigned</p>`;
+                    log('All faces successfully unassigned', 'success');
+                } else {
+                    resultsDiv.innerHTML += `<p>❌ Only ${releasedFaces.length} of ${facesBeforeDeletion.length} faces unassigned</p>`;
+                    log('Some faces not properly unassigned', 'error');
+                }
+                
+                resultsDiv.innerHTML += '<h3>Test Complete!</h3>';
+                
+            } catch (error) {
+                resultsDiv.innerHTML += `<p>❌ Test failed: ${error.message}</p>`;
+                log(`Test failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Load initial data
+        window.onload = async () => {
+            log('Initializing test page...', 'info');
+            await loadFaceData();
+            await loadGroups();
+            await loadUnassignedFaces();
+        };
+    </script>
+</body>
+</html>
