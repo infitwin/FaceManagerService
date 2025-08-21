@@ -40,6 +40,7 @@ export interface ProcessFacesResponse {
  */
 export interface FaceGroup {
   groupId: string;
+  groupName?: string;
   faceIds: string[];
   fileIds: string[];
   faceCount: number;
