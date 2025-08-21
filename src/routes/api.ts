@@ -12,7 +12,7 @@ import {
   GroupOperationResponse,
   Face
 } from '../types';
-import fetch from 'node-fetch';
+// Removed unused fetch import
 
 const router = Router();
 

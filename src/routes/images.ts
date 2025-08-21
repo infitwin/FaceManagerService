@@ -89,45 +89,6 @@ router.get('/image/:userId/:fileId', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * Get all file data with faces for a user
- */
-router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
-  try {
-    const { userId } = req.params;
-    const db = getDb();
-    
-    const filesData: any[] = [];
-    
-    // Get files from user subcollection
-    const userFiles = await db
-      .collection('users')
-      .doc(userId)
-      .collection('files')
-      .get();
-    
-    for (const doc of userFiles.docs) {
-      const data = doc.data();
-      if (data.extractedFaces && data.extractedFaces.length > 0) {
-        filesData.push({
-          fileId: doc.id,
-          url: data.url || data.imageUrl || data.fileUrl || data.downloadURL,
-          storagePath: data.storagePath || data.path,
-          fileName: data.fileName,
-          faces: data.extractedFaces
-        });
-      }
-    }
-    
-    res.json({
-      success: true,
-      files: filesData
-    });
-    
-  } catch (error) {
-    console.error('Error fetching files:', error);
-    res.status(500).json({ error: 'Failed to fetch files' });
-  }
-});
+// Removed duplicate /files-with-faces/:userId route - it's already in api.ts
 
 export default router;
