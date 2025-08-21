@@ -120,9 +120,21 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
         }
       }
       
+      // Construct proper URL for the image
+      let imageUrl = fileData.url || fileData.imageUrl;
+      
+      // If URL is a storage path, convert to Firebase Storage URL
+      if (!imageUrl || !imageUrl.startsWith('http')) {
+        const storagePath = imageUrl || fileData.storagePath || fileData.path;
+        if (storagePath) {
+          imageUrl = `https://firebasestorage.googleapis.com/v0/b/infitwin.appspot.com/o/${encodeURIComponent(storagePath)}?alt=media`;
+          console.log(`  🔗 Constructed Firebase Storage URL from path: ${storagePath}`);
+        }
+      }
+      
       files.push({
         fileId,
-        url: fileData.url || fileData.imageUrl || fileData.storagePath,
+        url: imageUrl,
         faces,
         ...fileData
       });
