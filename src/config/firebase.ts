@@ -10,14 +10,24 @@ let db: admin.firestore.Firestore | null = null;
 
 export function initializeFirebase(): void {
   try {
-    const credentialsPath = process.env.FIREBASE_CREDENTIALS_PATH || 
-                          path.join(__dirname, '../../firebase-credentials.json');
+    let credential;
     
-    console.log('🔑 Initializing Firebase with credentials from:', credentialsPath);
+    // Check if running in Cloud Run with Secret Manager
+    if (process.env.FIREBASE_CREDENTIALS) {
+      console.log('🔑 Initializing Firebase with credentials from Secret Manager');
+      const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+      credential = admin.credential.cert(serviceAccount);
+    } else {
+      // Fall back to local file for development
+      const credentialsPath = process.env.FIREBASE_CREDENTIALS_PATH || 
+                            path.join(__dirname, '../../firebase-credentials.json');
+      console.log('🔑 Initializing Firebase with credentials from file:', credentialsPath);
+      credential = admin.credential.cert(credentialsPath);
+    }
     
     // Initialize Firebase Admin
     admin.initializeApp({
-      credential: admin.credential.cert(credentialsPath),
+      credential: credential,
       projectId: process.env.FIREBASE_PROJECT_ID || 'infitwin'
     });
     
