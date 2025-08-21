@@ -16,58 +16,7 @@ import {
 
 const router = Router();
 
-/**
- * Helper function to get mock files with faces for testing
- */
-function getMockFilesWithFaces(userId: string) {
-  return [
-    {
-      fileId: 'mock-file-1',
-      url: 'https://picsum.photos/400/300?random=1',
-      faces: [
-        {
-          faceId: 'mock-face-1',
-          fileId: 'mock-file-1',
-          boundingBox: {
-            Left: 0.2,
-            Top: 0.1,
-            Width: 0.3,
-            Height: 0.4
-          },
-          confidence: 99.5
-        },
-        {
-          faceId: 'mock-face-2',
-          fileId: 'mock-file-1',
-          boundingBox: {
-            Left: 0.5,
-            Top: 0.2,
-            Width: 0.25,
-            Height: 0.35
-          },
-          confidence: 98.2
-        }
-      ]
-    },
-    {
-      fileId: 'mock-file-2',
-      url: 'https://picsum.photos/400/300?random=2',
-      faces: [
-        {
-          faceId: 'mock-face-3',
-          fileId: 'mock-file-2',
-          boundingBox: {
-            Left: 0.3,
-            Top: 0.15,
-            Width: 0.28,
-            Height: 0.38
-          },
-          confidence: 97.8
-        }
-      ]
-    }
-  ];
-}
+// Mock data removed - using real Firebase data only
 
 /**
  * POST /api/process-faces
@@ -151,30 +100,16 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
     
     console.log(`✅ Found ${files.length} files with faces`);
     
-    // If no files found, return mock data for testing
-    if (files.length === 0) {
-      console.log('📝 No files in Firebase, returning mock data');
-      const mockFiles = getMockFilesWithFaces(userId);
-      return res.json({
-        success: true,
-        files: mockFiles
-      });
-    }
-    
     res.json({
       success: true,
       files
     });
   } catch (error: any) {
     console.error('Error getting files with faces:', error);
-    
-    // On error, return mock data so the UI still works
-    console.log('⚠️ Firebase error, returning mock data');
-    const { userId } = req.params;
-    const mockFiles = getMockFilesWithFaces(userId);
-    res.json({
-      success: true,
-      files: mockFiles
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to get files with faces',
+      files: []
     });
   }
 });

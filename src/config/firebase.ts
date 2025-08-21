@@ -12,23 +12,24 @@ export function initializeFirebase(): void {
   try {
     let credential;
     
-    // Check if running in Cloud Run with Secret Manager
-    if (process.env.FIREBASE_CREDENTIALS) {
-      console.log('🔑 Initializing Firebase with credentials from Secret Manager');
-      const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
-      credential = admin.credential.cert(serviceAccount);
-    } else {
-      // Fall back to local file for development
-      const credentialsPath = process.env.FIREBASE_CREDENTIALS_PATH || 
-                            path.join(__dirname, '../../firebase-credentials.json');
-      console.log('🔑 Initializing Firebase with credentials from file:', credentialsPath);
-      credential = admin.credential.cert(credentialsPath);
+    // REQUIRE credentials - no fallbacks
+    if (!process.env.FIREBASE_CREDENTIALS) {
+      throw new Error('FIREBASE_CREDENTIALS environment variable is required but not set');
+    }
+    
+    console.log('🔑 Initializing Firebase with credentials from Secret Manager');
+    const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+    credential = admin.credential.cert(serviceAccount);
+    
+    // REQUIRE project ID - no fallbacks
+    if (!process.env.FIREBASE_PROJECT_ID) {
+      throw new Error('FIREBASE_PROJECT_ID environment variable is required but not set');
     }
     
     // Initialize Firebase Admin
     admin.initializeApp({
       credential: credential,
-      projectId: process.env.FIREBASE_PROJECT_ID || 'infitwin'
+      projectId: process.env.FIREBASE_PROJECT_ID
     });
     
     // Initialize Firestore
