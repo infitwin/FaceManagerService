@@ -65,12 +65,15 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
     const { userId } = req.params;
     console.log(`🔍 Getting files with faces for user: ${userId}`);
     
-    // Query Firebase for files with faces
+    // Query Firebase for ALL files in user subcollection
+    // We'll check for faces in the document data
     const filesSnapshot = await groupManager.db
+      .collection('users')
+      .doc(userId)
       .collection('files')
-      .where('userId', '==', userId)
-      .where('hasFaces', '==', true)
       .get();
+    
+    console.log(`📁 Found ${filesSnapshot.size} total files for user`);
     
     const files: any[] = [];
     
@@ -78,21 +81,48 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
       const fileData = doc.data();
       const fileId = doc.id;
       
-      // Get faces for this file
-      const facesSnapshot = await groupManager.db
-        .collection('faces')
-        .where('fileId', '==', fileId)
-        .where('userId', '==', userId)
-        .get();
+      // Check if this file has faces in any format
+      const hasFacesData = fileData.extractedFaces || fileData.faces || fileData.hasFaces;
       
-      const faces = facesSnapshot.docs.map(faceDoc => ({
-        faceId: faceDoc.id,
-        ...faceDoc.data()
-      }));
+      if (!hasFacesData) {
+        continue; // Skip files without face data
+      }
+      
+      console.log(`🎯 File ${fileId} has face data:`, {
+        hasExtractedFaces: !!fileData.extractedFaces,
+        hasFaces: !!fileData.faces,
+        hasFacesFlag: fileData.hasFaces
+      });
+      
+      // Check if faces are embedded in the file document itself
+      let faces = [];
+      
+      if (fileData.extractedFaces && Array.isArray(fileData.extractedFaces)) {
+        // Faces are embedded in the file document
+        faces = fileData.extractedFaces;
+        console.log(`  📦 Found ${faces.length} embedded faces in file document`);
+      } else {
+        // Try to get faces from a separate faces subcollection
+        const facesSnapshot = await groupManager.db
+          .collection('users')
+          .doc(userId)
+          .collection('faces')
+          .where('fileId', '==', fileId)
+          .get();
+        
+        faces = facesSnapshot.docs.map(faceDoc => ({
+          faceId: faceDoc.id,
+          ...faceDoc.data()
+        }));
+        
+        if (faces.length > 0) {
+          console.log(`  📂 Found ${faces.length} faces in separate collection`);
+        }
+      }
       
       files.push({
         fileId,
-        url: fileData.url || fileData.storagePath,
+        url: fileData.url || fileData.imageUrl || fileData.storagePath,
         faces,
         ...fileData
       });
