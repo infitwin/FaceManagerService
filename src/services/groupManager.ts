@@ -8,7 +8,7 @@ import { Face, FaceGroup, FileFaceUpdate } from '../types';
 import { FieldValue } from 'firebase-admin/firestore';
 
 export class GroupManager {
-  private get db() {
+  get db() {
     return getDb();
   }
 

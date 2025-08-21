@@ -170,6 +170,7 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
     
     // On error, return mock data so the UI still works
     console.log('⚠️ Firebase error, returning mock data');
+    const { userId } = req.params;
     const mockFiles = getMockFilesWithFaces(userId);
     res.json({
       success: true,
