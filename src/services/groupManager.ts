@@ -298,6 +298,14 @@ export class GroupManager {
     const faceIds = faces.map(f => f.faceId);
     const fileIds = [...new Set(faces.map(f => f.fileId).filter(Boolean))];
     
+    console.log(`[WORKFLOW-BACKEND] Firestore Write - Creating group:`, {
+      userId,
+      faceIds,
+      fileIds,
+      faceCount: faceIds.length,
+      groupName
+    });
+    
     const groupId = this.generateGroupId();
     const groupRef = this.db.collection('users').doc(userId)
                            .collection('faceGroups').doc(groupId);
@@ -312,8 +320,13 @@ export class GroupManager {
       updatedAt: FieldValue.serverTimestamp() as any
     };
     
+    console.log(`[WORKFLOW-BACKEND] Firestore Document to write:`, {
+      path: `users/${userId}/faceGroups/${groupId}`,
+      document: groupData
+    });
+    
     await groupRef.set(groupData);
-    console.log(`✅ Created group ${groupId} with ${faceIds.length} faces`);
+    console.log(`[WORKFLOW-BACKEND] ✅ Successfully wrote to Firestore: ${groupId}`);
     return groupId;
   }
 

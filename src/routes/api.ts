@@ -123,14 +123,13 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
       // Construct proper URL for the image
       let imageUrl = fileData.url || fileData.imageUrl;
       
-      // If URL is a storage path, convert to public Storage URL
+      // If URL is missing, construct Firebase Storage URL from fileId
       if (!imageUrl || !imageUrl.startsWith('http')) {
-        const storagePath = imageUrl || fileData.storagePath || fileData.path;
-        if (storagePath) {
-          // Use direct Google Storage URL which works with public ACL
-          imageUrl = `https://storage.googleapis.com/infitwin.firebasestorage.app/${storagePath}`;
-          console.log(`  🔗 Constructed public Storage URL from path: ${storagePath}`);
-        }
+        // Firebase Storage path is typically: users/{userId}/files/{fileId}
+        const storagePath = `users/${userId}/files/${fileId}`;
+        // Use Firebase Storage public URL format
+        imageUrl = `https://firebasestorage.googleapis.com/v0/b/infitwin.firebasestorage.app/o/${encodeURIComponent(storagePath)}?alt=media`;
+        console.log(`  🔗 Constructed Firebase Storage URL for file ${fileId}`);
       }
       
       files.push({
@@ -228,13 +227,36 @@ router.post('/groups/:userId', async (req: Request, res: Response) => {
       });
     }
     
-    console.log(`\n🎯 Creating new group for user ${userId} with ${faces.length} faces`);
+    console.log(`[WORKFLOW-BACKEND] Step 8a: Received create group request:`, {
+      userId,
+      facesCount: faces.length,
+      groupName,
+      faces: faces.map((f: any) => ({
+        faceId: f.faceId,
+        fileId: f.fileId,
+        hasBoundingBox: !!f.boundingBox
+      })),
+      fullPayload: req.body
+    });
     
     // Create the group using the group manager
     const groupId = await groupManager.createGroupWithFaces(userId, faces, groupName);
     
+    console.log(`[WORKFLOW-BACKEND] Step 8b: Group created in Firestore:`, {
+      groupId,
+      firestorePath: `users/${userId}/faceGroups/${groupId}`
+    });
+    
     // Get the created group
     const group = await groupManager.getGroup(userId, groupId);
+    
+    console.log(`[WORKFLOW-BACKEND] Step 8c: Retrieved group from Firestore:`, {
+      groupId: group?.groupId,
+      groupName: group?.groupName,
+      faceCount: group?.faceCount,
+      faceIds: group?.faceIds,
+      fullGroup: group
+    });
     
     res.json({
       success: true,
