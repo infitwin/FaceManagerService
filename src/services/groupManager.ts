@@ -6,27 +6,29 @@
 import { getDb, getAdmin } from '../config/firebase';
 import { Face, FaceGroup, FileFaceUpdate } from '../types';
 import { FieldValue } from 'firebase-admin/firestore';
-import * as AWS from 'aws-sdk';
+import { RekognitionClient, SearchFacesCommand } from '@aws-sdk/client-rekognition';
 
 export class GroupManager {
-  private rekognition: AWS.Rekognition | null = null;
+  private rekognition: RekognitionClient | null = null;
 
   constructor() {
     // AWS client will be initialized on first use
   }
 
-  private getAWSClient(): AWS.Rekognition {
+  private getAWSClient(): RekognitionClient {
     if (!this.rekognition) {
       // Initialize AWS Rekognition client on first use (after env vars are loaded)
-      console.log('🔧 Initializing AWS Rekognition client...');
+      console.log('🔧 Initializing AWS Rekognition client (SDK v3)...');
       console.log('  AWS_REGION:', process.env.AWS_REGION || 'us-east-1');
       console.log('  AWS-ACCESS-KEY-ID:', process.env['AWS-ACCESS-KEY-ID'] ? 'Set' : 'NOT SET');
       console.log('  AWS-SECRET-ACCESS-KEY:', process.env['AWS-SECRET-ACCESS-KEY'] ? 'Set' : 'NOT SET');
       
-      this.rekognition = new AWS.Rekognition({
+      this.rekognition = new RekognitionClient({
         region: process.env.AWS_REGION || 'us-east-1',
-        accessKeyId: process.env['AWS-ACCESS-KEY-ID'],  // Using hyphenated name from Secret Manager
-        secretAccessKey: process.env['AWS-SECRET-ACCESS-KEY']  // Using hyphenated name from Secret Manager
+        credentials: {
+          accessKeyId: process.env['AWS-ACCESS-KEY-ID'] || '',  // Using hyphenated name from Secret Manager
+          secretAccessKey: process.env['AWS-SECRET-ACCESS-KEY'] || ''  // Using hyphenated name from Secret Manager
+        }
       });
     }
     return this.rekognition;
@@ -45,12 +47,14 @@ export class GroupManager {
       console.log(`🔍 Searching for matches for face ${faceId} in collection face_coll_${userId}`);
       
       const rekognition = this.getAWSClient();
-      const response = await rekognition.searchFaces({
+      const command = new SearchFacesCommand({
         CollectionId: `face_coll_${userId}`,
         FaceId: faceId,
         FaceMatchThreshold: 85.0,  // Using 85% threshold for better grouping
         MaxFaces: 20  // Get more matches for better transitivity
-      }).promise();
+      });
+      
+      const response = await rekognition.send(command);
       
       // Extract matched face IDs
       const matchedFaceIds = response.FaceMatches

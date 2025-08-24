@@ -14,8 +14,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@types/aws-sdk": "^2.7.4",
-    "aws-sdk": "^2.1692.0",
+    "@aws-sdk/client-rekognition": "^3.873.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
