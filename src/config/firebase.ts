@@ -10,6 +10,22 @@ let db: admin.firestore.Firestore | null = null;
 
 export function initializeFirebase(): void {
   try {
+    // Debug: Log all environment variables that might be relevant
+    console.log('🔍 Environment variables check:');
+    console.log('  FIREBASE_CREDENTIALS:', process.env.FIREBASE_CREDENTIALS ? 'Set' : 'NOT SET');
+    console.log('  FIREBASE_PROJECT_ID:', process.env.FIREBASE_PROJECT_ID ? 'Set' : 'NOT SET');
+    console.log('  PORT:', process.env.PORT);
+    console.log('  NODE_ENV:', process.env.NODE_ENV);
+    
+    // Also check if Secret Manager might be using different names
+    const envKeys = Object.keys(process.env).filter(key => 
+      key.includes('FIREBASE') || key.includes('firebase') || 
+      key.includes('AWS') || key.includes('aws')
+    );
+    if (envKeys.length > 0) {
+      console.log('  Related env vars found:', envKeys);
+    }
+    
     let credential;
     
     // REQUIRE credentials - no fallbacks
