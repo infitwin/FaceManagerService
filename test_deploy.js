@@ -166,7 +166,7 @@ if (!fs.existsSync('./Dockerfile')) {
 console.log('\n8️⃣ Checking environment setup...');
 const requiredEnvVars = [
   'FIREBASE_CREDENTIALS',
-  'FIREBASE_PROJECT_ID',
+  'FIREBASE_APP_ID',
   'AWS-ACCESS-KEY-ID',
   'AWS-SECRET-ACCESS-KEY',
   'AWS_REGION'

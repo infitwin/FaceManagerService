@@ -24,7 +24,7 @@ services:
           "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
           "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/test%40test-project.iam.gserviceaccount.com"
         }
-      FIREBASE_PROJECT_ID: test-project
+      FIREBASE_APP_ID: test-project
       
       # AWS configuration (use dummy values for local testing)
       AWS-ACCESS-KEY-ID: AKIAIOSFODNN7EXAMPLE
