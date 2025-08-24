@@ -48,10 +48,24 @@ export class GroupManager {
       console.log(`  📊 Input data:`, {
         faceId: face.faceId,
         matchedFaceIds: face.matchedFaceIds,
+        matchedCount: face.matchedFaceIds?.length || 0,
         confidence: face.confidence,
         hasGroupId: !!face.groupId,
         groupId: face.groupId
       });
+      
+      // Log AWS GroupId if present
+      if (face.groupId) {
+        console.log(`  🏷️ AWS GroupId: ${face.groupId}`);
+      }
+      
+      // Log matched faces details
+      if (face.matchedFaceIds && face.matchedFaceIds.length > 0) {
+        console.log(`  🔗 Matched to ${face.matchedFaceIds.length} faces:`);
+        face.matchedFaceIds.forEach((matchId, idx) => {
+          console.log(`     ${idx + 1}. ${matchId}`);
+        });
+      }
       
       // If no matches provided, try to find similar faces in existing groups
       let matchedFaceIds = face.matchedFaceIds;
@@ -65,8 +79,16 @@ export class GroupManager {
       
       if (matchedFaceIds.length > 0) {
         // Face has matches - find existing groups
+        console.log(`  🔍 Searching for groups containing these matched faces...`);
         const existingGroups = await this.findGroupsContainingFaces(userId, matchedFaceIds);
-        console.log(`  Found ${existingGroups.length} existing groups containing matched faces`);
+        console.log(`  📦 Found ${existingGroups.length} existing groups containing matched faces`);
+        if (existingGroups.length > 0) {
+          console.log(`  📋 Existing groups:`, existingGroups.map(g => ({
+            groupId: g.groupId,
+            faceCount: g.faceIds?.length || 0,
+            containsFaces: g.faceIds?.slice(0, 3) // Show first 3 faces
+          })));
+        }
         
         if (existingGroups.length === 0) {
           // No existing groups - create new group with face and all matches
@@ -138,6 +160,28 @@ export class GroupManager {
     }
 
     console.log(`\n✅ Processed ${faces.length} faces into ${updatedGroups.length} groups`);
+    
+    // Log summary of groups created
+    console.log(`\n📊 GROUPING SUMMARY:`);
+    console.log(`  Total faces processed: ${faces.length}`);
+    console.log(`  Groups affected: ${updatedGroups.length}`);
+    
+    // Show unique groups and their sizes
+    const uniqueGroups = new Map();
+    updatedGroups.forEach(group => {
+      if (!uniqueGroups.has(group.groupId)) {
+        uniqueGroups.set(group.groupId, {
+          faceCount: group.faceIds?.length || 0,
+          faceIds: group.faceIds || []
+        });
+      }
+    });
+    
+    console.log(`  Unique groups: ${uniqueGroups.size}`);
+    uniqueGroups.forEach((data, groupId) => {
+      console.log(`    - Group ${groupId.substring(0, 8)}... has ${data.faceCount} faces`);
+    });
+    
     return updatedGroups;
   }
 
