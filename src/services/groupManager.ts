@@ -18,6 +18,7 @@ export class GroupManager {
    */
   async processFaces(userId: string, fileId: string, faces: Face[]): Promise<FaceGroup[]> {
     console.log(`\n📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
+    console.log(`🔄 Face matching v2.0 - with similarity search enabled`);
     
     const updatedGroups: FaceGroup[] = [];
     const fileUpdates: FileFaceUpdate[] = [];
@@ -25,15 +26,23 @@ export class GroupManager {
     for (const face of faces) {
       console.log(`\n🔍 Processing face ${face.faceId} with ${face.matchedFaceIds.length} matches`);
       
-      if (face.matchedFaceIds.length > 0) {
+      // If no matches provided, try to find similar faces in existing groups
+      let matchedFaceIds = face.matchedFaceIds;
+      if (matchedFaceIds.length === 0) {
+        console.log(`  No matches provided, searching for similar faces in existing groups...`);
+        matchedFaceIds = await this.findSimilarFaces(userId, face.faceId);
+        console.log(`  Found ${matchedFaceIds.length} potential matches`);
+      }
+      
+      if (matchedFaceIds.length > 0) {
         // Face has matches - find existing groups
-        const existingGroups = await this.findGroupsContainingFaces(userId, face.matchedFaceIds);
+        const existingGroups = await this.findGroupsContainingFaces(userId, matchedFaceIds);
         console.log(`  Found ${existingGroups.length} existing groups containing matched faces`);
         
         if (existingGroups.length === 0) {
           // No existing groups - create new group with face and all matches
-          console.log(`  Creating new group for face and its ${face.matchedFaceIds.length} matches`);
-          const groupId = await this.createGroup(userId, [face.faceId, ...face.matchedFaceIds], fileId);
+          console.log(`  Creating new group for face and its ${matchedFaceIds.length} matches`);
+          const groupId = await this.createGroup(userId, [face.faceId, ...matchedFaceIds], fileId);
           const newGroup = await this.getGroup(userId, groupId);
           if (newGroup) updatedGroups.push(newGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId });
@@ -80,6 +89,79 @@ export class GroupManager {
 
     console.log(`\n✅ Processed ${faces.length} faces into ${updatedGroups.length} groups`);
     return updatedGroups;
+  }
+
+  /**
+   * Find similar faces in existing groups
+   * This helps match new faces to existing groups even without explicit matchedFaceIds
+   */
+  private async findSimilarFaces(userId: string, faceId: string): Promise<string[]> {
+    console.log(`    Searching for similar faces to ${faceId} in existing groups...`);
+    
+    // First check if this face is already in a group
+    const existingGroupsQuery = this.db.collection('users').doc(userId)
+                                      .collection('faceGroups')
+                                      .where('faceIds', 'array-contains', faceId);
+    const existingSnapshot = await existingGroupsQuery.get();
+    
+    if (!existingSnapshot.empty) {
+      console.log(`      Face ${faceId} is already in a group, skipping similarity search`);
+      return [];
+    }
+    
+    // Get the face document to check for embedded match data
+    const faceDoc = await this.db.collection('users').doc(userId)
+                                 .collection('faces').doc(faceId).get();
+    
+    if (!faceDoc.exists) {
+      console.log(`      Face document ${faceId} not found in faces collection`);
+      return [];
+    }
+    
+    const faceData = faceDoc.data();
+    const similarFaceIds: string[] = [];
+    
+    // Check if face has AWS Rekognition match data
+    if (faceData?.matches && Array.isArray(faceData.matches)) {
+      console.log(`      Face has ${faceData.matches.length} AWS Rekognition matches`);
+      
+      // Use high-confidence matches (>85% similarity)
+      for (const match of faceData.matches) {
+        if (match.similarity >= 85 && match.faceId && match.faceId !== faceId) {
+          similarFaceIds.push(match.faceId);
+          console.log(`      Found match: ${match.faceId} (${match.similarity}% similarity)`);
+        }
+      }
+    }
+    
+    // Fallback: Check if there's a matchedFaces field
+    if (faceData?.matchedFaces && Array.isArray(faceData.matchedFaces)) {
+      console.log(`      Face has ${faceData.matchedFaces.length} matched faces`);
+      for (const matchedFaceId of faceData.matchedFaces) {
+        if (matchedFaceId !== faceId && !similarFaceIds.includes(matchedFaceId)) {
+          similarFaceIds.push(matchedFaceId);
+        }
+      }
+    }
+    
+    // Additional check: Look for faces with the same externalId (if faces were imported from same source)
+    if (faceData?.externalId) {
+      const externalIdQuery = this.db.collection('users').doc(userId)
+                                     .collection('faces')
+                                     .where('externalId', '==', faceData.externalId)
+                                     .limit(10);
+      const externalIdSnapshot = await externalIdQuery.get();
+      
+      externalIdSnapshot.forEach((doc: any) => {
+        if (doc.id !== faceId && !similarFaceIds.includes(doc.id)) {
+          similarFaceIds.push(doc.id);
+          console.log(`      Found face with same externalId: ${doc.id}`);
+        }
+      });
+    }
+    
+    console.log(`    Found ${similarFaceIds.length} similar faces total`);
+    return similarFaceIds;
   }
 
   /**
