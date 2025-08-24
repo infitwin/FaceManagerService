@@ -73,4 +73,5 @@ app.listen(PORT, () => {
   console.log(`🧪 Test UI: http://localhost:8083 (run 'npm run test-ui')`);
   console.log(`🔧 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`👤 Test User ID: ${process.env.TEST_USER_ID}`);
+  console.log(`🔄 Service redeployed with corrected Secret Manager configuration`);
 });
