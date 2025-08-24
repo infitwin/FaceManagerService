@@ -17,8 +17,23 @@ export class GroupManager {
    * This is the core algorithm that ensures A→B→C all get the same GroupId
    */
   async processFaces(userId: string, fileId: string, faces: Face[]): Promise<FaceGroup[]> {
-    console.log(`\n📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
+    console.log('\n🎯 processFaces() CALLED');
+    console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
     console.log(`🔄 Face matching v2.1 - with batch grouping for same-file faces`);
+    
+    // Log exact structure of received faces
+    console.log('📦 Received faces array:');
+    faces.forEach((face, index) => {
+      console.log(`  Face ${index}:`, {
+        faceId: face.faceId || 'MISSING',
+        matchedFaceIds: face.matchedFaceIds || 'MISSING',
+        matchedCount: face.matchedFaceIds?.length || 0,
+        confidence: face.confidence || 'MISSING',
+        boundingBox: face.boundingBox ? 'present' : 'MISSING',
+        groupId: face.groupId || 'MISSING',
+        allKeys: Object.keys(face)
+      });
+    });
     
     const updatedGroups: FaceGroup[] = [];
     const fileUpdates: FileFaceUpdate[] = [];
@@ -138,23 +153,32 @@ export class GroupManager {
     boundingBox?: any,
     confidence?: number
   ): Promise<void> {
-    const faceRef = this.db.collection('users').doc(userId)
-                          .collection('faces').doc(faceId);
-    
-    const faceData = {
-      faceId,
-      groupId,
-      fileId,
-      userId,
-      boundingBox: boundingBox || {},
-      confidence: confidence || 99.99,
-      emotions: [],
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp()
-    };
-    
-    await faceRef.set(faceData);
-    console.log(`    📝 Created face document: /users/${userId}/faces/${faceId} -> group ${groupId}`);
+    try {
+      console.log(`    📝 Attempting to create face document for ${faceId}...`);
+      
+      const faceRef = this.db.collection('users').doc(userId)
+                            .collection('faces').doc(faceId);
+      
+      const faceData = {
+        faceId,
+        groupId,
+        fileId,
+        userId,
+        boundingBox: boundingBox || {},
+        confidence: confidence || 99.99,
+        emotions: [],
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
+      };
+      
+      await faceRef.set(faceData);
+      console.log(`    ✅ Created face document: /users/${userId}/faces/${faceId} -> group ${groupId}`);
+    } catch (error: any) {
+      console.error(`    ❌ FAILED to create face document for ${faceId}:`, error);
+      console.error(`      Error message:`, error.message);
+      console.error(`      Error code:`, error.code);
+      // Don't throw - continue processing other faces
+    }
   }
 
   /**

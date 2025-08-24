@@ -24,18 +24,46 @@ const router = Router();
  * Main endpoint for processing faces with transitivity
  */
 router.post('/process-faces', async (req: Request, res: Response) => {
+  console.log('\n════════════════════════════════════════');
+  console.log('📥 /api/process-faces ENDPOINT HIT');
+  console.log('📋 Raw request body:', JSON.stringify(req.body, null, 2));
+  console.log('🔍 Body type:', typeof req.body);
+  console.log('🔑 Body keys:', Object.keys(req.body || {}));
+  
   try {
     const { userId, fileId, faces } = req.body as ProcessFacesRequest;
     
-    // Validate request
+    // Validate request with detailed logging
     if (!userId || !fileId || !faces || !Array.isArray(faces)) {
+      console.error('❌ VALIDATION FAILED:');
+      console.error('  userId present?', !!userId, 'value:', userId);
+      console.error('  fileId present?', !!fileId, 'value:', fileId);
+      console.error('  faces present?', !!faces);
+      console.error('  faces is array?', Array.isArray(faces));
+      console.error('  faces type:', typeof faces);
+      if (faces) {
+        console.error('  faces length?', faces.length);
+        console.error('  faces sample:', faces[0]);
+      }
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: userId, fileId, faces[]'
       });
     }
     
-    console.log(`\n🚀 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
+    console.log('✅ VALIDATION PASSED');
+    console.log(`📊 About to process:`, {
+      userId: userId,
+      fileId: fileId,
+      faceCount: faces.length,
+      firstFace: faces[0] ? {
+        faceId: faces[0].faceId,
+        matchedCount: faces[0].matchedFaceIds?.length,
+        hasGroupId: !!faces[0].groupId,
+        hasBoundingBox: !!faces[0].boundingBox,
+        allKeys: Object.keys(faces[0])
+      } : 'NO FACES'
+    });
     
     // Process faces with transitivity
     const groups = await groupManager.processFaces(userId, fileId, faces);
@@ -47,9 +75,21 @@ router.post('/process-faces', async (req: Request, res: Response) => {
       message: `Successfully processed ${faces.length} faces into ${groups.length} groups`
     };
     
+    console.log('📤 SENDING RESPONSE:', {
+      success: response.success,
+      processedCount: response.processedCount,
+      groupCount: groups.length,
+      groupIds: groups.map(g => g.groupId)
+    });
+    console.log('════════════════════════════════════════\n');
+    
     res.json(response);
   } catch (error: any) {
-    console.error('Error processing faces:', error);
+    console.error('❌ ERROR IN /api/process-faces:', error);
+    console.error('  Error message:', error.message);
+    console.error('  Error stack:', error.stack);
+    console.error('════════════════════════════════════════\n');
+    
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to process faces'
