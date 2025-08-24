@@ -6,10 +6,50 @@
 import { getDb, getAdmin } from '../config/firebase';
 import { Face, FaceGroup, FileFaceUpdate } from '../types';
 import { FieldValue } from 'firebase-admin/firestore';
+import * as AWS from 'aws-sdk';
 
 export class GroupManager {
+  private rekognition: AWS.Rekognition;
+
+  constructor() {
+    // Initialize AWS Rekognition client
+    this.rekognition = new AWS.Rekognition({
+      region: process.env.AWS_REGION || 'us-east-1',
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    });
+  }
+
   get db() {
     return getDb();
+  }
+
+  /**
+   * Search for matching faces in AWS Face Collection
+   * This is what the ArtifactProcessor should NOT be doing
+   */
+  private async searchForMatches(userId: string, faceId: string): Promise<string[]> {
+    try {
+      console.log(`🔍 Searching for matches for face ${faceId} in collection face_coll_${userId}`);
+      
+      const response = await this.rekognition.searchFaces({
+        CollectionId: `face_coll_${userId}`,
+        FaceId: faceId,
+        FaceMatchThreshold: 85.0,  // Using 85% threshold for better grouping
+        MaxFaces: 20  // Get more matches for better transitivity
+      }).promise();
+      
+      // Extract matched face IDs
+      const matchedFaceIds = response.FaceMatches
+        ?.map(match => match.Face?.FaceId)
+        .filter((id): id is string => id !== undefined && id !== faceId) || [];
+      
+      console.log(`✅ Face ${faceId} matches ${matchedFaceIds.length} other faces:`, matchedFaceIds);
+      return matchedFaceIds;
+    } catch (error) {
+      console.error(`❌ Error searching for face matches: ${error}`);
+      return [];
+    }
   }
 
   /**
@@ -67,14 +107,14 @@ export class GroupManager {
         });
       }
       
-      // If no matches provided, try to find similar faces in existing groups
+      // If no matches provided, search AWS Face Collection for matches
       let matchedFaceIds = face.matchedFaceIds;
-      if (matchedFaceIds.length === 0) {
-        console.log(`  No matches provided, searching for similar faces in existing groups...`);
-        matchedFaceIds = await this.findSimilarFaces(userId, face.faceId);
-        console.log(`  Found ${matchedFaceIds.length} potential matches`);
+      if (!matchedFaceIds || matchedFaceIds.length === 0) {
+        console.log(`  ⚡ No matches provided - calling AWS SearchFaces API...`);
+        matchedFaceIds = await this.searchForMatches(userId, face.faceId);
+        console.log(`  ✅ AWS found ${matchedFaceIds.length} matching faces`);
       } else {
-        console.log(`  Has ${matchedFaceIds.length} matched faces: ${matchedFaceIds.join(', ')}`);
+        console.log(`  📦 Using ${matchedFaceIds.length} pre-provided matches: ${matchedFaceIds.join(', ')}`);
       }
       
       if (matchedFaceIds.length > 0) {
