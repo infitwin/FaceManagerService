@@ -13,6 +13,7 @@ export function initializeFirebase(): void {
     // Debug: Log all environment variables that might be relevant
     console.log('🔍 Environment variables check:');
     console.log('  FIREBASE_CREDENTIALS:', process.env.FIREBASE_CREDENTIALS ? 'Set' : 'NOT SET');
+    console.log('  FIREBASE_PROJECT_ID:', process.env.FIREBASE_PROJECT_ID ? 'Set' : 'NOT SET');
     console.log('  FIREBASE_APP_ID:', process.env.FIREBASE_APP_ID ? 'Set' : 'NOT SET');
     console.log('  PORT:', process.env.PORT);
     console.log('  NODE_ENV:', process.env.NODE_ENV);
@@ -37,15 +38,19 @@ export function initializeFirebase(): void {
     const serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
     credential = admin.credential.cert(serviceAccount);
     
-    // REQUIRE project ID - no fallbacks
-    if (!process.env.FIREBASE_APP_ID) {
-      throw new Error('FIREBASE_APP_ID environment variable is required but not set');
+    // Get project ID from environment or fall back to service account
+    const projectId = process.env.FIREBASE_PROJECT_ID || serviceAccount.project_id;
+    
+    if (!projectId) {
+      throw new Error('Could not determine Firebase project ID from FIREBASE_PROJECT_ID env var or service account credentials');
     }
+    
+    console.log(`📌 Using Firebase project ID: ${projectId}`);
     
     // Initialize Firebase Admin
     admin.initializeApp({
       credential: credential,
-      projectId: process.env.FIREBASE_APP_ID
+      projectId: projectId
     });
     
     // Initialize Firestore
