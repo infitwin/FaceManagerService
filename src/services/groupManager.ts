@@ -9,15 +9,27 @@ import { FieldValue } from 'firebase-admin/firestore';
 import * as AWS from 'aws-sdk';
 
 export class GroupManager {
-  private rekognition: AWS.Rekognition;
+  private rekognition: AWS.Rekognition | null = null;
 
   constructor() {
-    // Initialize AWS Rekognition client
-    this.rekognition = new AWS.Rekognition({
-      region: process.env.AWS_REGION || 'us-east-1',
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
-    });
+    // AWS client will be initialized on first use
+  }
+
+  private getAWSClient(): AWS.Rekognition {
+    if (!this.rekognition) {
+      // Initialize AWS Rekognition client on first use (after env vars are loaded)
+      console.log('🔧 Initializing AWS Rekognition client...');
+      console.log('  AWS_REGION:', process.env.AWS_REGION || 'us-east-1');
+      console.log('  AWS_ACCESS_KEY_ID:', process.env.AWS_ACCESS_KEY_ID ? 'Set' : 'NOT SET');
+      console.log('  AWS_SECRET_ACCESS_KEY:', process.env.AWS_SECRET_ACCESS_KEY ? 'Set' : 'NOT SET');
+      
+      this.rekognition = new AWS.Rekognition({
+        region: process.env.AWS_REGION || 'us-east-1',
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+      });
+    }
+    return this.rekognition;
   }
 
   get db() {
@@ -32,7 +44,8 @@ export class GroupManager {
     try {
       console.log(`🔍 Searching for matches for face ${faceId} in collection face_coll_${userId}`);
       
-      const response = await this.rekognition.searchFaces({
+      const rekognition = this.getAWSClient();
+      const response = await rekognition.searchFaces({
         CollectionId: `face_coll_${userId}`,
         FaceId: faceId,
         FaceMatchThreshold: 85.0,  // Using 85% threshold for better grouping
