@@ -5,6 +5,7 @@
 
 import { Router, Request, Response } from 'express';
 import { groupManager } from '../services/groupManager';
+import { getAdmin } from '../config/firebase';
 import { 
   ProcessFacesRequest, 
   ProcessFacesResponse,
@@ -335,6 +336,55 @@ router.delete('/groups/:groupId/faces/:faceId', async (req: Request, res: Respon
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to remove face from group'
+    });
+  }
+});
+
+/**
+ * PUT /api/groups/:groupId/name
+ * Update the person name for a group
+ */
+router.put('/groups/:groupId/name', async (req: Request, res: Response) => {
+  try {
+    const { groupId } = req.params;
+    const { userId, personName } = req.body;
+    
+    if (!userId || !personName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing userId or personName'
+      });
+    }
+    
+    console.log(`Updating person name for group ${groupId}: ${personName}`);
+    
+    // Update the group document with the person name
+    const groupRef = groupManager.db
+      .collection('users')
+      .doc(userId)
+      .collection('faceGroups')
+      .doc(groupId);
+    
+    await groupRef.update({
+      personName: personName,
+      groupName: personName, // Also store as groupName for compatibility
+      updatedAt: getAdmin().firestore.FieldValue.serverTimestamp()
+    });
+    
+    // Get the updated group
+    const updatedDoc = await groupRef.get();
+    const updatedGroup = { groupId: updatedDoc.id, ...updatedDoc.data() };
+    
+    res.json({
+      success: true,
+      message: 'Person name updated successfully',
+      group: updatedGroup
+    });
+  } catch (error: any) {
+    console.error('Error updating person name:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to update person name'
     });
   }
 });
