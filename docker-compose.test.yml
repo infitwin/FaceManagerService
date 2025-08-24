@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  facemanager:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # Port configuration
+      PORT: 8080
+      NODE_ENV: production
+      
+      # Firebase configuration (use dummy values for local testing)
+      FIREBASE_CREDENTIALS: |
+        {
+          "type": "service_account",
+          "project_id": "test-project",
+          "private_key_id": "test-key-id",
+          "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7W8V0\n-----END PRIVATE KEY-----",
+          "client_email": "test@test-project.iam.gserviceaccount.com",
+          "client_id": "123456789",
+          "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+          "token_uri": "https://oauth2.googleapis.com/token",
+          "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+          "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/test%40test-project.iam.gserviceaccount.com"
+        }
+      FIREBASE_PROJECT_ID: test-project
+      
+      # AWS configuration (use dummy values for local testing)
+      AWS-ACCESS-KEY-ID: AKIAIOSFODNN7EXAMPLE
+      AWS-SECRET-ACCESS-KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+      AWS_REGION: us-east-1
+      
+      # CORS configuration
+      CORS_ORIGINS: "http://localhost:8000,http://localhost:8357,http://localhost:8083"
+    
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', (r) => {r.statusCode === 200 ? process.exit(0) : process.exit(1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    
+    # For debugging - remove in production
+    stdin_open: true
+    tty: true

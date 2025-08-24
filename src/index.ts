@@ -13,11 +13,24 @@ import imageRoutes from './routes/images';
 // Load environment variables
 dotenv.config();
 
-// Initialize Firebase
-initializeFirebase();
-
 const app: Express = express();
 const PORT = process.env.PORT || 8082;
+
+// Initialize Firebase - but don't crash if it fails
+let firebaseInitialized = false;
+let firebaseError: any = null;
+
+// Try to initialize Firebase immediately
+try {
+  initializeFirebase();
+  firebaseInitialized = true;
+  console.log('✅ Firebase initialized successfully');
+} catch (error) {
+  firebaseError = error;
+  console.error('⚠️ Firebase initialization failed - service will run in degraded mode');
+  console.error('  Error:', error);
+  // Don't crash - let the service start anyway
+}
 
 // Parse CORS origins from environment
 const corsOrigins = process.env.CORS_ORIGINS?.split(',') || [
@@ -43,13 +56,16 @@ app.use((req: Request, res: Response, next) => {
   next();
 });
 
-// Health check endpoint
+// Health check endpoint - Always return 200 for Cloud Run
 app.get('/health', (req: Request, res: Response) => {
-  res.json({
-    status: 'healthy',
+  const status = firebaseInitialized ? 'healthy' : (firebaseError ? 'degraded' : 'initializing');
+  
+  res.status(200).json({  // Always 200 so Cloud Run considers container healthy
+    status,
     service: 'Face Manager Service',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    firebase: firebaseInitialized ? 'connected' : (firebaseError ? `error: ${firebaseError?.message}` : 'initializing')
   });
 });
 

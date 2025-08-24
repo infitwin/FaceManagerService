@@ -59,6 +59,7 @@ export function initializeFirebase(): void {
     console.log('✅ Firebase initialized successfully');
   } catch (error) {
     console.error('❌ Failed to initialize Firebase:', error);
+    // Re-throw the error so the caller can handle it
     throw error;
   }
 }
