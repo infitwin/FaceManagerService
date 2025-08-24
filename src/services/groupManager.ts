@@ -20,13 +20,13 @@ export class GroupManager {
       // Initialize AWS Rekognition client on first use (after env vars are loaded)
       console.log('🔧 Initializing AWS Rekognition client...');
       console.log('  AWS_REGION:', process.env.AWS_REGION || 'us-east-1');
-      console.log('  AWS_ACCESS_KEY_ID:', process.env.AWS_ACCESS_KEY_ID ? 'Set' : 'NOT SET');
-      console.log('  AWS_SECRET_ACCESS_KEY:', process.env.AWS_SECRET_ACCESS_KEY ? 'Set' : 'NOT SET');
+      console.log('  AWS-ACCESS-KEY-ID:', process.env['AWS-ACCESS-KEY-ID'] ? 'Set' : 'NOT SET');
+      console.log('  AWS-SECRET-ACCESS-KEY:', process.env['AWS-SECRET-ACCESS-KEY'] ? 'Set' : 'NOT SET');
       
       this.rekognition = new AWS.Rekognition({
         region: process.env.AWS_REGION || 'us-east-1',
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+        accessKeyId: process.env['AWS-ACCESS-KEY-ID'],  // Using hyphenated name from Secret Manager
+        secretAccessKey: process.env['AWS-SECRET-ACCESS-KEY']  // Using hyphenated name from Secret Manager
       });
     }
     return this.rekognition;
