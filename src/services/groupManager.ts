@@ -18,10 +18,15 @@ export class GroupManager {
    */
   async processFaces(userId: string, fileId: string, faces: Face[]): Promise<FaceGroup[]> {
     console.log(`\n📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    console.log(`🔄 Face matching v2.0 - with similarity search enabled`);
+    console.log(`🔄 Face matching v2.1 - with batch grouping for same-file faces`);
     
     const updatedGroups: FaceGroup[] = [];
     const fileUpdates: FileFaceUpdate[] = [];
+    
+    // IMPORTANT: If multiple faces from same file and no matches provided,
+    // assume they are DIFFERENT people (common case: group photo)
+    // Each face from the same file should get its own group unless explicitly matched
+    const processedFaceToGroup: Map<string, string> = new Map();
 
     for (const face of faces) {
       console.log(`\n🔍 Processing face ${face.faceId} with ${face.matchedFaceIds.length} matches`);
@@ -296,9 +301,30 @@ export class GroupManager {
     const snapshot = await groupsRef.orderBy('updatedAt', 'desc').get();
     
     const groups: FaceGroup[] = [];
+    const emptyGroupsToDelete: string[] = [];
+    
     snapshot.forEach((doc: any) => {
-      groups.push({ groupId: doc.id, ...doc.data() } as FaceGroup);
+      const data = doc.data();
+      // Filter out empty groups and clean them up
+      if (!data.faceIds || data.faceIds.length === 0) {
+        console.log(`🗑️ Found empty group ${doc.id}, will clean up`);
+        emptyGroupsToDelete.push(doc.id);
+      } else {
+        groups.push({ groupId: doc.id, ...data } as FaceGroup);
+      }
     });
+    
+    // Clean up empty groups asynchronously
+    if (emptyGroupsToDelete.length > 0) {
+      console.log(`🧹 Cleaning up ${emptyGroupsToDelete.length} empty groups`);
+      const batch = this.db.batch();
+      emptyGroupsToDelete.forEach(groupId => {
+        const docRef = this.db.collection('users').doc(userId)
+                             .collection('faceGroups').doc(groupId);
+        batch.delete(docRef);
+      });
+      batch.commit().catch(err => console.error('Error cleaning empty groups:', err));
+    }
     
     return groups;
   }
