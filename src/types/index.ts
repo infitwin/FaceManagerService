@@ -14,6 +14,8 @@ export interface Face {
   confidence?: number;
   boundingBox?: any;
   similarity?: number;
+  groupId?: string;  // GroupId from AWS Rekognition
+  emotions?: any[];
 }
 
 /**
@@ -42,8 +44,14 @@ export interface FaceGroup {
   groupId: string;
   groupName?: string;
   faceIds: string[];
+  leaderFaceId: string;
+  leaderFaceData: {
+    fileId: string;
+    boundingBox: any;
+  };
   fileIds: string[];
   faceCount: number;
+  status: string;
   createdAt: Timestamp | Date;
   updatedAt: Timestamp | Date;
   mergedFrom?: string[];

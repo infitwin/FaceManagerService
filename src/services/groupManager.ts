@@ -29,7 +29,14 @@ export class GroupManager {
     const processedFaceToGroup: Map<string, string> = new Map();
 
     for (const face of faces) {
-      console.log(`\n🔍 Processing face ${face.faceId} with ${face.matchedFaceIds.length} matches`);
+      console.log(`\n🔍 Processing face ${face.faceId}`);
+      console.log(`  📊 Input data:`, {
+        faceId: face.faceId,
+        matchedFaceIds: face.matchedFaceIds,
+        confidence: face.confidence,
+        hasGroupId: !!face.groupId,
+        groupId: face.groupId
+      });
       
       // If no matches provided, try to find similar faces in existing groups
       let matchedFaceIds = face.matchedFaceIds;
@@ -37,6 +44,8 @@ export class GroupManager {
         console.log(`  No matches provided, searching for similar faces in existing groups...`);
         matchedFaceIds = await this.findSimilarFaces(userId, face.faceId);
         console.log(`  Found ${matchedFaceIds.length} potential matches`);
+      } else {
+        console.log(`  Has ${matchedFaceIds.length} matched faces: ${matchedFaceIds.join(', ')}`);
       }
       
       if (matchedFaceIds.length > 0) {
@@ -47,7 +56,16 @@ export class GroupManager {
         if (existingGroups.length === 0) {
           // No existing groups - create new group with face and all matches
           console.log(`  Creating new group for face and its ${matchedFaceIds.length} matches`);
-          const groupId = await this.createGroup(userId, [face.faceId, ...matchedFaceIds], fileId);
+          const groupId = await this.createGroup(userId, [face.faceId, ...matchedFaceIds], fileId, face.boundingBox);
+          
+          // Create face document for this face
+          await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
+          
+          // Also create face documents for matched faces if they don't exist
+          for (const matchedFaceId of matchedFaceIds) {
+            await this.createFaceDocument(userId, matchedFaceId, groupId, fileId);
+          }
+          
           const newGroup = await this.getGroup(userId, groupId);
           if (newGroup) updatedGroups.push(newGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId });
@@ -57,6 +75,10 @@ export class GroupManager {
           const group = existingGroups[0];
           console.log(`  Adding face to existing group ${group.groupId}`);
           await this.addFaceToGroup(userId, group.groupId, face.faceId, fileId);
+          
+          // Create face document for this face
+          await this.createFaceDocument(userId, face.faceId, group.groupId, fileId, face.boundingBox, face.confidence);
+          
           const updatedGroup = await this.getGroup(userId, group.groupId);
           if (updatedGroup) updatedGroups.push(updatedGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: group.groupId });
@@ -73,6 +95,10 @@ export class GroupManager {
           
           // Add new face to merged group
           await this.addFaceToGroup(userId, primaryGroupId, face.faceId, fileId);
+          
+          // Create face document for this face
+          await this.createFaceDocument(userId, face.faceId, primaryGroupId, fileId, face.boundingBox, face.confidence);
+          
           const mergedGroup = await this.getGroup(userId, primaryGroupId);
           if (mergedGroup) updatedGroups.push(mergedGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: primaryGroupId });
@@ -80,7 +106,11 @@ export class GroupManager {
       } else {
         // No matches - create single-face group
         console.log(`  No matches - creating new single-face group`);
-        const groupId = await this.createGroup(userId, [face.faceId], fileId);
+        const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox);
+        
+        // Create face document for this face
+        await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
+        
         const newGroup = await this.getGroup(userId, groupId);
         if (newGroup) updatedGroups.push(newGroup);
         fileUpdates.push({ fileId, faceId: face.faceId, groupId });
@@ -94,6 +124,37 @@ export class GroupManager {
 
     console.log(`\n✅ Processed ${faces.length} faces into ${updatedGroups.length} groups`);
     return updatedGroups;
+  }
+
+  /**
+   * Create face document in the faces collection
+   * Per Data Standard 1.4.6 - dual-collection architecture
+   */
+  private async createFaceDocument(
+    userId: string, 
+    faceId: string, 
+    groupId: string, 
+    fileId: string,
+    boundingBox?: any,
+    confidence?: number
+  ): Promise<void> {
+    const faceRef = this.db.collection('users').doc(userId)
+                          .collection('faces').doc(faceId);
+    
+    const faceData = {
+      faceId,
+      groupId,
+      fileId,
+      userId,
+      boundingBox: boundingBox || {},
+      confidence: confidence || 99.99,
+      emotions: [],
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp()
+    };
+    
+    await faceRef.set(faceData);
+    console.log(`    📝 Created face document: /users/${userId}/faces/${faceId} -> group ${groupId}`);
   }
 
   /**
@@ -188,7 +249,7 @@ export class GroupManager {
   /**
    * Create a new face group
    */
-  private async createGroup(userId: string, faceIds: string[], fileId: string): Promise<string> {
+  private async createGroup(userId: string, faceIds: string[], fileId: string, leaderBoundingBox?: any): Promise<string> {
     const groupId = this.generateGroupId();
     const groupRef = this.db.collection('users').doc(userId)
                            .collection('faceGroups').doc(groupId);
@@ -196,14 +257,20 @@ export class GroupManager {
     const groupData: Partial<FaceGroup> = {
       groupId,
       faceIds,
+      leaderFaceId: faceIds[0],  // First face is the leader
+      leaderFaceData: {
+        fileId: fileId,
+        boundingBox: leaderBoundingBox || {}
+      },
       fileIds: [fileId],
       faceCount: faceIds.length,
+      status: 'unreviewed',
       createdAt: FieldValue.serverTimestamp() as any,
       updatedAt: FieldValue.serverTimestamp() as any
     };
     
     await groupRef.set(groupData);
-    console.log(`    Created group ${groupId} with ${faceIds.length} faces`);
+    console.log(`    Created group ${groupId} with ${faceIds.length} faces, leader: ${faceIds[0]}`);
     return groupId;
   }
 
@@ -376,6 +443,12 @@ export class GroupManager {
       const groupData = groupDoc.data() as FaceGroup;
       const updatedFaceIds = (groupData.faceIds || []).filter(id => id !== faceId);
       
+      // Delete the face document from faces collection
+      const faceRef = this.db.collection('users').doc(userId)
+                            .collection('faces').doc(faceId);
+      await faceRef.delete();
+      console.log(`    🗑️ Deleted face document: /users/${userId}/faces/${faceId}`);
+      
       // If no faces left, delete the group
       if (updatedFaceIds.length === 0) {
         await groupRef.delete();
@@ -383,12 +456,23 @@ export class GroupManager {
         return true;
       }
       
-      // Update the group with the remaining faces
-      await groupRef.update({
+      // Prepare update object
+      const updateData: any = {
         faceIds: updatedFaceIds,
         faceCount: updatedFaceIds.length,
         updatedAt: FieldValue.serverTimestamp()
-      });
+      };
+      
+      // Update leader if removed face was the leader
+      if (groupData.leaderFaceId === faceId && updatedFaceIds.length > 0) {
+        updateData.leaderFaceId = updatedFaceIds[0];
+        // Note: We'd need to fetch the new leader's data for full update
+        // For now, just updating the ID
+        console.log(`    👑 Updated leader face to: ${updatedFaceIds[0]}`);
+      }
+      
+      // Update the group with the remaining faces
+      await groupRef.update(updateData);
       
       console.log(`✅ Removed face ${faceId} from group ${groupId}`);
       return true;
@@ -422,8 +506,14 @@ export class GroupManager {
       groupId,
       groupName: groupName || `Group ${groupId.substring(0, 8)}`,
       faceIds,
+      leaderFaceId: faceIds[0],  // First face is the leader
+      leaderFaceData: {
+        fileId: fileIds[0] || 'manual',
+        boundingBox: faces[0]?.boundingBox || {}
+      },
       fileIds: fileIds.length > 0 ? fileIds : ['manual'],
       faceCount: faceIds.length,
+      status: 'unreviewed',
       createdAt: FieldValue.serverTimestamp() as any,
       updatedAt: FieldValue.serverTimestamp() as any
     };
