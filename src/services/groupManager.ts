@@ -356,16 +356,45 @@ export class GroupManager {
 
   /**
    * Find all groups that contain any of the specified face IDs
+   * FIXED: Now looks up face documents to find their groups instead of searching groups directly
    */
   private async findGroupsContainingFaces(userId: string, faceIds: string[]): Promise<FaceGroup[]> {
-    const groupsRef = this.db.collection('users').doc(userId).collection('faceGroups');
-    const query = groupsRef.where('faceIds', 'array-contains-any', faceIds);
-    const snapshot = await query.get();
+    console.log(`    🔍 Looking up groups for ${faceIds.length} face IDs`);
+    const groupIds = new Set<string>();
     
+    // For each matched face, look up which group it belongs to via face documents
+    for (const faceId of faceIds) {
+      try {
+        const faceDoc = await this.db.collection('users').doc(userId)
+                                      .collection('faces').doc(faceId).get();
+        
+        if (faceDoc.exists) {
+          const faceData = faceDoc.data();
+          if (faceData?.groupId) {
+            console.log(`      ✓ Face ${faceId} belongs to group ${faceData.groupId}`);
+            groupIds.add(faceData.groupId);
+          } else {
+            console.log(`      - Face ${faceId} exists but has no group`);
+          }
+        } else {
+          console.log(`      - Face ${faceId} has no face document (not processed yet)`);
+        }
+      } catch (error) {
+        console.error(`      ❌ Error looking up face ${faceId}:`, error);
+      }
+    }
+    
+    console.log(`    📊 Found ${groupIds.size} unique groups from face lookups`);
+    
+    // Fetch the unique groups
     const groups: FaceGroup[] = [];
-    snapshot.forEach((doc: any) => {
-      groups.push({ groupId: doc.id, ...doc.data() } as FaceGroup);
-    });
+    for (const groupId of groupIds) {
+      const group = await this.getGroup(userId, groupId);
+      if (group) {
+        groups.push(group);
+        console.log(`      Loaded group ${groupId} with ${group.faceIds?.length || 0} faces`);
+      }
+    }
     
     return groups;
   }
@@ -457,6 +486,17 @@ export class GroupManager {
     // Merge face IDs and calculate unique count
     const mergedFaceIds = [...new Set([...(primaryData.faceIds || []), ...(secondaryData.faceIds || [])])];
     const mergedFileIds = [...new Set([...(primaryData.fileIds || []), ...(secondaryData.fileIds || [])])];
+    
+    // Update all face documents from secondary group to point to primary group
+    console.log(`    Updating ${secondaryData.faceIds?.length || 0} face documents to point to primary group`);
+    const facesCollection = this.db.collection('users').doc(userId).collection('faces');
+    const updatePromises = (secondaryData.faceIds || []).map(faceId => 
+      facesCollection.doc(faceId).update({ 
+        groupId: primaryGroupId,
+        updatedAt: FieldValue.serverTimestamp()
+      }).catch(err => console.warn(`      Failed to update face ${faceId}:`, err))
+    );
+    await Promise.all(updatePromises);
     
     // Update primary group with merged data
     await primaryRef.update({
