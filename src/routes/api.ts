@@ -162,7 +162,7 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
       }
       
       // Construct proper URL for the image
-      let imageUrl = fileData.url || fileData.imageUrl;
+      let imageUrl = fileData.url || fileData.imageUrl || fileData.downloadURL;
       
       // If URL is missing, construct Firebase Storage URL from fileId
       if (!imageUrl || !imageUrl.startsWith('http')) {

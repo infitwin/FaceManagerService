@@ -6,7 +6,7 @@
 import { getDb, getAdmin } from '../config/firebase';
 import { Face, FaceGroup, FileFaceUpdate } from '../types';
 import { FieldValue } from 'firebase-admin/firestore';
-import { RekognitionClient, SearchFacesCommand } from '@aws-sdk/client-rekognition';
+import { RekognitionClient, SearchFacesCommand, DeleteFacesCommand } from '@aws-sdk/client-rekognition';
 
 export class GroupManager {
   private rekognition: RekognitionClient | null = null;
