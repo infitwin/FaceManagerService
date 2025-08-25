@@ -148,17 +148,16 @@ export class GroupManager {
         }
         
         if (existingGroups.length === 0) {
-          // No existing groups - create new group with face and all matches
-          console.log(`  Creating new group for face and its ${matchedFaceIds.length} matches`);
-          const groupId = await this.createGroup(userId, [face.faceId, ...matchedFaceIds], fileId, face.boundingBox);
+          // No existing groups - create new group with ONLY this face
+          // The matched faces will be grouped naturally when they are processed
+          console.log(`  Creating new group for face (matches will be grouped when processed)`);
+          const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox);
           
           // Create face document for this face
           await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
           
-          // Also create face documents for matched faces if they don't exist
-          for (const matchedFaceId of matchedFaceIds) {
-            await this.createFaceDocument(userId, matchedFaceId, groupId, fileId);
-          }
+          // Don't add matched faces to the group - they'll be added when they're actually processed
+          // This prevents creating groups with phantom faces that haven't been processed yet
           
           const newGroup = await this.getGroup(userId, groupId);
           if (newGroup) updatedGroups.push(newGroup);
