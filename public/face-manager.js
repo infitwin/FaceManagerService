@@ -1061,7 +1061,7 @@ window.refreshData = async function() {
 };
 
 // Proceed to next step - Face Summarization or Leader Selection
-async function proceedToNextStep() {
+window.proceedToNextStep = async function() {
     // Check if we have any groups
     if (faceGroups.length === 0) {
         showToast('No face groups created yet. Please group some faces first.', 'error');
