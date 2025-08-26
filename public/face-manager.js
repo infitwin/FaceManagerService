@@ -1,6 +1,9 @@
 // Face Manager - Vanilla JS with HTML5 Drag & Drop
-const API_BASE_URL = 'http://localhost:8082/api';
-const USER_ID = 'zsvLTeIPJUYGnZHzWX7hVtLJlJX2';
+// Use relative URL in production, localhost in development
+const API_BASE_URL = window.location.hostname === 'localhost' 
+    ? 'http://localhost:8082/api' 
+    : '/api';
+const USER_ID = 'zsvLTeIPJUYGnZHzWX7hVtLJX2';
 
 // State
 let unassignedFaces = [];

@@ -3,7 +3,11 @@
  */
 
 async function getFirebaseImageUrls() {
-    const response = await fetch(`http://localhost:8082/api/files-with-faces/zsvLTeIPJUYGnZHzWX7hVtLJlJX2`);
+    // Use relative URL in production, localhost in development
+    const baseUrl = window.location.hostname === 'localhost' 
+        ? 'http://localhost:8082' 
+        : '';
+    const response = await fetch(`${baseUrl}/api/files-with-faces/zsvLTeIPJUYGnZHzWX7hVtLJlJX2`);
     const data = await response.json();
     
     const urlMap = {};
