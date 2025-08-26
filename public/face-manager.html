@@ -526,5 +526,31 @@
     <!-- Scripts -->
     <script src="get-firebase-urls.js"></script>
     <script src="face-manager.js"></script>
+    <script>
+        // Ensure the button function is available even if main script fails
+        if (typeof proceedToNextStep === 'undefined') {
+            window.proceedToNextStep = function() {
+                const choice = confirm(
+                    'What would you like to do next?\n\n' +
+                    'OK = View Face Summarization Info\n' +
+                    'Cancel = Select Leader Faces\n\n' +
+                    'Note: Face Summarization runs automatically when interviews complete.'
+                );
+                
+                if (choice) {
+                    alert('Face Summarization Info:\n\n' +
+                          '• Your face groups are ready for AI analysis\n' +
+                          '• When an interview completes, faces are automatically analyzed\n' + 
+                          '• AI identifies people and relationships\n' +
+                          '• Results are added to your knowledge graph');
+                } else {
+                    alert('Leader Face Selection:\n\n' +
+                          '• Choose the best representative face for each group\n' +
+                          '• This helps identify people more accurately\n' +
+                          '• You can update leaders anytime');
+                }
+            };
+        }
+    </script>
 </body>
 </html>
