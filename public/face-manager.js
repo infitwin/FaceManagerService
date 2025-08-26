@@ -14,18 +14,76 @@ let faceDataCache = {};
 let draggedFaces = [];
 let draggedFromGroup = null;
 
-// Initialize on page load
+// Define critical functions BEFORE initialization so they're available even if init fails
+window.proceedToNextStep = async function() {
+    // Check if we have any groups
+    if (faceGroups && faceGroups.length === 0) {
+        if (window.showToast) {
+            showToast('No face groups created yet. Please group some faces first.', 'error');
+        } else {
+            alert('No face groups created yet. Please group some faces first.');
+        }
+        return;
+    }
+    
+    // Show options dialog
+    const choice = confirm(
+        'What would you like to do next?\n\n' +
+        'OK = Run Face Summarization (AI analysis)\n' +
+        'Cancel = Select Leader Faces (manual selection)\n\n' +
+        'Note: Face Summarization will analyze all groups and generate a summary.'
+    );
+    
+    if (choice) {
+        // Run Face Summarization
+        if (window.runFaceSummarization) {
+            await runFaceSummarization();
+        } else {
+            alert('Face Summarization:\n\n• Groups are ready for AI analysis\n• Runs automatically when interviews complete\n• Identifies people and relationships');
+        }
+    } else {
+        // Go to leader face selection
+        if (window.goToLeaderSelection) {
+            goToLeaderSelection();
+        } else {
+            alert('Leader Selection:\n\n• Choose representative faces for each group\n• Helps identify people accurately');
+        }
+    }
+};
+
+// Initialize on page load - with error handling
 document.addEventListener('DOMContentLoaded', async () => {
-    await loadFaceData();
-    await loadUnassignedFaces();
-    await loadGroups();
-    setupEventListeners();
+    try {
+        await loadFaceData();
+    } catch (e) {
+        console.error('Failed to load face data:', e);
+    }
+    
+    try {
+        await loadUnassignedFaces();
+    } catch (e) {
+        console.error('Failed to load unassigned faces:', e);
+    }
+    
+    try {
+        await loadGroups();
+    } catch (e) {
+        console.error('Failed to load groups:', e);
+    }
+    
+    try {
+        setupEventListeners();
+    } catch (e) {
+        console.error('Failed to setup event listeners:', e);
+    }
     
     // Clean up any duplicates that might exist
     setTimeout(() => {
-        const duplicatesRemoved = deduplicateUnassignedFaces();
-        if (duplicatesRemoved > 0) {
-            console.log(`Cleaned up ${duplicatesRemoved} duplicate faces on page load`);
+        if (window.deduplicateUnassignedFaces) {
+            const duplicatesRemoved = deduplicateUnassignedFaces();
+            if (duplicatesRemoved > 0) {
+                console.log(`Cleaned up ${duplicatesRemoved} duplicate faces on page load`);
+            }
         }
     }, 1000);
 });
@@ -1060,30 +1118,7 @@ window.refreshData = async function() {
     showToast('Data refreshed', 'success');
 };
 
-// Proceed to next step - Face Summarization or Leader Selection
-window.proceedToNextStep = async function() {
-    // Check if we have any groups
-    if (faceGroups.length === 0) {
-        showToast('No face groups created yet. Please group some faces first.', 'error');
-        return;
-    }
-    
-    // Show options dialog
-    const choice = confirm(
-        'What would you like to do next?\n\n' +
-        'OK = Run Face Summarization (AI analysis)\n' +
-        'Cancel = Select Leader Faces (manual selection)\n\n' +
-        'Note: Face Summarization will analyze all groups and generate a summary.'
-    );
-    
-    if (choice) {
-        // Run Face Summarization
-        await runFaceSummarization();
-    } else {
-        // Go to leader face selection
-        goToLeaderSelection();
-    }
-}
+// (Function already defined at the top of the file for reliability)
 
 // Run Face Summarization through the Interview Orchestrator
 async function runFaceSummarization() {
