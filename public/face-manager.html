@@ -479,7 +479,22 @@
         <div class="groups-panel">
             <div class="panel-header">
                 <h2 class="panel-title">Groups</h2>
-                <span class="face-count" id="groupCount">0</span>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="face-count" id="groupCount">0</span>
+                    <button class="next-step-btn" onclick="proceedToNextStep()" style="
+                        background: #10b981;
+                        color: white;
+                        border: none;
+                        padding: 8px 16px;
+                        border-radius: 6px;
+                        font-size: 14px;
+                        font-weight: 600;
+                        cursor: pointer;
+                        transition: all 0.2s;
+                    " onmouseover="this.style.background='#059669'" onmouseout="this.style.background='#10b981'">
+                        Next Step →
+                    </button>
+                </div>
             </div>
             <div class="groups-list" id="groupsList">
                 <div class="loading">

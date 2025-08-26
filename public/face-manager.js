@@ -1056,3 +1056,241 @@ window.refreshData = async function() {
     await loadGroups();
     showToast('Data refreshed', 'success');
 };
+
+// Proceed to next step - Face Summarization or Leader Selection
+async function proceedToNextStep() {
+    // Check if we have any groups
+    if (faceGroups.length === 0) {
+        showToast('No face groups created yet. Please group some faces first.', 'error');
+        return;
+    }
+    
+    // Show options dialog
+    const choice = confirm(
+        'What would you like to do next?\n\n' +
+        'OK = Run Face Summarization (AI analysis)\n' +
+        'Cancel = Select Leader Faces (manual selection)\n\n' +
+        'Note: Face Summarization will analyze all groups and generate a summary.'
+    );
+    
+    if (choice) {
+        // Run Face Summarization
+        await runFaceSummarization();
+    } else {
+        // Go to leader face selection
+        goToLeaderSelection();
+    }
+}
+
+// Run Face Summarization through the Interview Orchestrator
+async function runFaceSummarization() {
+    try {
+        showToast('Starting Face Summarization...', 'success');
+        
+        // Show inline summary with actual group data
+        showInlineSummary();
+        
+    } catch (error) {
+        console.error('Error running face summarization:', error);
+        showToast('Failed to run face summarization', 'error');
+    }
+}
+
+// Go to leader face selection UI
+function goToLeaderSelection() {
+    // Create a simple leader selection view
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.8);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+    `;
+    
+    const content = document.createElement('div');
+    content.style.cssText = `
+        background: white;
+        padding: 30px;
+        border-radius: 12px;
+        max-width: 90%;
+        max-height: 90%;
+        overflow-y: auto;
+    `;
+    
+    content.innerHTML = `
+        <h2 style="margin-bottom: 20px;">Select Leader Faces for Groups</h2>
+        <div id="leaderSelectionGroups"></div>
+        <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end;">
+            <button onclick="this.closest('[style*=fixed]').remove()" style="
+                padding: 8px 16px;
+                border: 1px solid #e5e7eb;
+                background: white;
+                border-radius: 6px;
+                cursor: pointer;
+            ">Cancel</button>
+            <button onclick="saveLeaderSelections()" style="
+                padding: 8px 16px;
+                background: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+            ">Save Leaders</button>
+        </div>
+    `;
+    
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    
+    // Load groups for leader selection
+    loadGroupsForLeaderSelection();
+}
+
+// Load groups for leader selection
+window.loadGroupsForLeaderSelection = async function() {
+    const container = document.getElementById('leaderSelectionGroups');
+    if (!container) return;
+    
+    container.innerHTML = faceGroups.map(group => `
+        <div style="margin-bottom: 20px; padding: 15px; background: #f9fafb; border-radius: 8px;">
+            <h3 style="margin-bottom: 10px;">Group ${group.groupId.substring(0, 20)}...</h3>
+            <p style="color: #6b7280; font-size: 14px; margin-bottom: 10px;">${group.faces.length} faces in group</p>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                ${group.faces.slice(0, 5).map(face => `
+                    <label style="cursor: pointer; text-align: center;">
+                        <input type="radio" name="leader_${group.groupId}" value="${face.faceId}" 
+                            ${face.faceId === group.leaderFaceId ? 'checked' : ''}>
+                        <img src="${getFaceThumbnailUrl(face.faceId)}" 
+                            style="width: 80px; height: 80px; object-fit: cover; border-radius: 4px; margin-top: 5px; border: 2px solid ${face.faceId === group.leaderFaceId ? '#3b82f6' : 'transparent'};">
+                    </label>
+                `).join('')}
+                ${group.faces.length > 5 ? `<span style="align-self: center; color: #6b7280;">+${group.faces.length - 5} more faces</span>` : ''}
+            </div>
+        </div>
+    `).join('');
+}
+
+// Save leader selections
+window.saveLeaderSelections = async function() {
+    // Collect selected leaders
+    const updates = [];
+    for (const group of faceGroups) {
+        const selected = document.querySelector(`input[name="leader_${group.groupId}"]:checked`);
+        if (selected && selected.value !== group.leaderFaceId) {
+            updates.push({
+                groupId: group.groupId,
+                leaderFaceId: selected.value
+            });
+        }
+    }
+    
+    if (updates.length === 0) {
+        showToast('No changes to save', 'info');
+        return;
+    }
+    
+    // Update leader faces via API
+    for (const update of updates) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/groups/${USER_ID}/${update.groupId}/leader`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ leaderFaceId: update.leaderFaceId })
+            });
+            
+            if (!response.ok) {
+                console.error(`Failed to update leader for group ${update.groupId}`);
+            }
+        } catch (error) {
+            console.error(`Error updating leader for group ${update.groupId}:`, error);
+        }
+    }
+    
+    showToast(`Updated ${updates.length} leader faces`, 'success');
+    
+    // Close modal
+    document.querySelector('[style*=fixed]').remove();
+    
+    // Reload groups to show updated leaders
+    await loadGroups();
+}
+
+// Show inline summary
+function showInlineSummary() {
+    // Calculate statistics
+    const totalFaces = faceGroups.reduce((sum, g) => sum + g.faces.length, 0);
+    const avgFacesPerGroup = faceGroups.length > 0 ? Math.round(totalFaces / faceGroups.length) : 0;
+    const largestGroup = faceGroups.reduce((max, g) => g.faces.length > max ? g.faces.length : max, 0);
+    
+    const summaryHtml = `
+        <div style="
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 30px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            max-width: 500px;
+            z-index: 10000;
+        ">
+            <h2 style="margin-bottom: 20px; color: #1f2937;">Face Summarization Ready</h2>
+            
+            <div style="background: #f0f9ff; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <h3 style="color: #0369a1; margin-bottom: 10px;">Current Statistics</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                    <div>
+                        <strong>Groups created:</strong> ${faceGroups.length}
+                    </div>
+                    <div>
+                        <strong>Total faces:</strong> ${totalFaces}
+                    </div>
+                    <div>
+                        <strong>Avg per group:</strong> ${avgFacesPerGroup}
+                    </div>
+                    <div>
+                        <strong>Largest group:</strong> ${largestGroup} faces
+                    </div>
+                </div>
+            </div>
+            
+            <div style="background: #f0fdf4; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+                <h3 style="color: #166534; margin-bottom: 10px;">What Happens Next</h3>
+                <ul style="margin: 0; padding-left: 20px; color: #166534;">
+                    <li>Face groups are ready for AI analysis</li>
+                    <li>When an interview completes, Face Summarization runs automatically</li>
+                    <li>AI will identify people and relationships</li>
+                    <li>Results will be added to the knowledge graph</li>
+                </ul>
+            </div>
+            
+            <div style="text-align: center;">
+                <button onclick="this.closest('[style*=fixed]').remove()" style="
+                    padding: 10px 30px;
+                    background: #3b82f6;
+                    color: white;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 16px;
+                    cursor: pointer;
+                ">Got it!</button>
+            </div>
+        </div>
+    `;
+    
+    // Remove any existing summary
+    const existing = document.querySelector('[style*="Face Summarization Ready"]');
+    if (existing) existing.remove();
+    
+    // Add summary to page
+    const summaryDiv = document.createElement('div');
+    summaryDiv.innerHTML = summaryHtml;
+    document.body.appendChild(summaryDiv.firstElementChild);
+}
