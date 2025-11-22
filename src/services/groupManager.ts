@@ -647,6 +647,60 @@ export class GroupManager {
   }
 
   /**
+   * Add a face to an existing group (public API method)
+   */
+  async addFaceToExistingGroup(userId: string, groupId: string, faceId: string, fileId?: string): Promise<boolean> {
+    try {
+      const groupRef = this.db.collection('users').doc(userId)
+                             .collection('faceGroups').doc(groupId);
+
+      const groupDoc = await groupRef.get();
+      if (!groupDoc.exists) {
+        console.log(`Group ${groupId} not found`);
+        return false;
+      }
+
+      const groupData = groupDoc.data() as FaceGroup;
+      const currentFaceIds = groupData.faceIds || [];
+
+      // Check if face is already in the group
+      if (currentFaceIds.includes(faceId)) {
+        console.log(`Face ${faceId} already in group ${groupId}`);
+        return true;
+      }
+
+      // Add the face to the group's faceIds array
+      const updatedFaceIds = [...currentFaceIds, faceId];
+
+      // Create a face document in the faces collection
+      const faceRef = this.db.collection('users').doc(userId)
+                            .collection('faces').doc(faceId);
+
+      await faceRef.set({
+        faceId,
+        groupId,
+        fileId: fileId || 'manual',
+        addedAt: FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      console.log(`    ✅ Created/updated face document: /users/${userId}/faces/${faceId}`);
+
+      // Update the group with the new face
+      await groupRef.update({
+        faceIds: updatedFaceIds,
+        faceCount: updatedFaceIds.length,
+        updatedAt: FieldValue.serverTimestamp()
+      });
+
+      console.log(`✅ Added face ${faceId} to group ${groupId}`);
+      return true;
+    } catch (error) {
+      console.error('Error adding face to group:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Create a new group with specific faces (public method for API)
    */
   async createGroupWithFaces(userId: string, faces: any[], groupName?: string): Promise<string> {

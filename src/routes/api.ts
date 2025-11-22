@@ -349,6 +349,40 @@ router.post('/groups/:userId/merge', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/groups/:groupId/faces
+ * Add a face to an existing group
+ */
+router.post('/groups/:groupId/faces', async (req: Request, res: Response) => {
+  try {
+    const { groupId } = req.params;
+    const { userId, faceId, fileId } = req.body;
+
+    if (!userId || !faceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: userId, faceId'
+      });
+    }
+
+    console.log(`Adding face ${faceId} to group ${groupId} for user ${userId}`);
+
+    // Add the face to the group
+    await groupManager.addFaceToExistingGroup(userId, groupId, faceId, fileId);
+
+    res.json({
+      success: true,
+      message: 'Face added to group successfully'
+    });
+  } catch (error: any) {
+    console.error('Error adding face to group:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to add face to group'
+    });
+  }
+});
+
+/**
  * DELETE /api/groups/:groupId/faces/:faceId
  * Remove a specific face from a group
  */
