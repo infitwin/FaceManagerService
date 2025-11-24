@@ -535,33 +535,16 @@ export class GroupManager {
   async getAllGroups(userId: string): Promise<FaceGroup[]> {
     const groupsRef = this.db.collection('users').doc(userId).collection('faceGroups');
     const snapshot = await groupsRef.orderBy('updatedAt', 'desc').get();
-    
+
     const groups: FaceGroup[] = [];
-    const emptyGroupsToDelete: string[] = [];
-    
+
     snapshot.forEach((doc: any) => {
       const data = doc.data();
-      // Filter out empty groups and clean them up
-      if (!data.faceIds || data.faceIds.length === 0) {
-        console.log(`🗑️ Found empty group ${doc.id}, will clean up`);
-        emptyGroupsToDelete.push(doc.id);
-      } else {
-        groups.push({ groupId: doc.id, ...data } as FaceGroup);
-      }
+      // Include ALL groups, even empty ones (they're valid for drag-drop)
+      // Don't auto-delete empty groups - user may want to add faces to them
+      groups.push({ groupId: doc.id, ...data } as FaceGroup);
     });
-    
-    // Clean up empty groups asynchronously
-    if (emptyGroupsToDelete.length > 0) {
-      console.log(`🧹 Cleaning up ${emptyGroupsToDelete.length} empty groups`);
-      const batch = this.db.batch();
-      emptyGroupsToDelete.forEach(groupId => {
-        const docRef = this.db.collection('users').doc(userId)
-                             .collection('faceGroups').doc(groupId);
-        batch.delete(docRef);
-      });
-      batch.commit().catch(err => console.error('Error cleaning empty groups:', err));
-    }
-    
+
     return groups;
   }
 
