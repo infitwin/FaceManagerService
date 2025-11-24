@@ -360,42 +360,47 @@ export class GroupManager {
    */
   private async findGroupsContainingFaces(userId: string, faceIds: string[]): Promise<FaceGroup[]> {
     console.log(`    🔍 Looking up groups for ${faceIds.length} face IDs`);
-    const groupIds = new Set<string>();
-    
-    // For each matched face, look up which group it belongs to via face documents
-    for (const faceId of faceIds) {
-      try {
-        const faceDoc = await this.db.collection('users').doc(userId)
-                                      .collection('faces').doc(faceId).get();
-        
-        if (faceDoc.exists) {
-          const faceData = faceDoc.data();
-          if (faceData?.groupId) {
-            console.log(`      ✓ Face ${faceId} belongs to group ${faceData.groupId}`);
-            groupIds.add(faceData.groupId);
-          } else {
-            console.log(`      - Face ${faceId} exists but has no group`);
-          }
-        } else {
-          console.log(`      - Face ${faceId} has no face document (not processed yet)`);
-        }
-      } catch (error) {
-        console.error(`      ❌ Error looking up face ${faceId}:`, error);
-      }
+
+    if (faceIds.length === 0) {
+      console.log(`    ⚠️  No face IDs provided`);
+      return [];
     }
-    
-    console.log(`    📊 Found ${groupIds.size} unique groups from face lookups`);
-    
-    // Fetch the unique groups
+
     const groups: FaceGroup[] = [];
-    for (const groupId of groupIds) {
-      const group = await this.getGroup(userId, groupId);
-      if (group) {
-        groups.push(group);
-        console.log(`      Loaded group ${groupId} with ${group.faceIds?.length || 0} faces`);
+    const foundGroupIds = new Set<string>();
+
+    // Query groups directly using array-contains-any
+    // Firestore array-contains-any has a limit of 10 items, so batch if needed
+    const batchSize = 10;
+    for (let i = 0; i < faceIds.length; i += batchSize) {
+      const batch = faceIds.slice(i, i + batchSize);
+      console.log(`    📦 Querying groups batch ${Math.floor(i/batchSize) + 1}: ${batch.length} face IDs`);
+
+      try {
+        const groupsQuery = await this.db.collection('users').doc(userId)
+          .collection('faceGroups')
+          .where('faceIds', 'array-contains-any', batch)
+          .get();
+
+        console.log(`    ✓ Found ${groupsQuery.size} groups in batch ${Math.floor(i/batchSize) + 1}`);
+
+        groupsQuery.forEach((doc) => {
+          const group = doc.data() as FaceGroup;
+          // Only add if we haven't seen this group yet
+          if (!foundGroupIds.has(group.groupId)) {
+            foundGroupIds.add(group.groupId);
+            groups.push(group);
+            console.log(`      ✓ Group ${group.groupId} contains ${group.faceIds?.length || 0} faces (name: ${group.groupName || '(unnamed)'})`);
+
+          }
+        });
+      } catch (error) {
+        console.error(`      ❌ Error querying groups for batch:`, error);
       }
     }
-    
+
+    console.log(`    📊 Found ${groups.length} unique groups containing matched faces`);
+
     return groups;
   }
 
