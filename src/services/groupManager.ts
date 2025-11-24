@@ -594,20 +594,17 @@ export class GroupManager {
       
       const groupData = groupDoc.data() as FaceGroup;
       const updatedFaceIds = (groupData.faceIds || []).filter(id => id !== faceId);
-      
+
       // Delete the face document from faces collection
       const faceRef = this.db.collection('users').doc(userId)
                             .collection('faces').doc(faceId);
       await faceRef.delete();
       console.log(`    🗑️ Deleted face document: /users/${userId}/faces/${faceId}`);
-      
-      // If no faces left, delete the group
-      if (updatedFaceIds.length === 0) {
-        await groupRef.delete();
-        console.log(`🗑️ Deleted empty group ${groupId}`);
-        return true;
-      }
-      
+
+      // Don't auto-delete empty groups - let user manually delete if desired
+      // Empty groups are valid and can have faces added back via drag-drop
+      console.log(`ℹ️ Group ${groupId} now has ${updatedFaceIds.length} faces (empty groups are preserved)`);
+
       // Prepare update object
       const updateData: any = {
         faceIds: updatedFaceIds,
