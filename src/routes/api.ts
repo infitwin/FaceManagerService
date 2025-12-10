@@ -173,6 +173,10 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
         console.log(`  🔗 Constructed Firebase Storage URL for file ${fileId}`);
       }
       
+      // GH-82: Log extractedText presence for debugging OCR text flow
+      console.log(`  📝 File ${fileId} extractedText: ${fileData.extractedText ? `YES (${fileData.extractedText.length} chars)` : 'NOT PRESENT'}`);
+      console.log(`  📋 File ${fileId} fields: ${Object.keys(fileData).join(', ')}`);
+
       files.push({
         fileId,
         url: imageUrl,
@@ -180,7 +184,7 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
         ...fileData
       });
     }
-    
+
     console.log(`✅ Found ${files.length} files with faces`);
     
     res.json({
