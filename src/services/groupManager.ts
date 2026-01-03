@@ -39,43 +39,6 @@ export class GroupManager {
   }
 
   /**
-   * Verify that an image exists in Firebase Storage (#237)
-   * Uses Firebase Admin SDK to directly check file existence - more reliable than HTTP
-   * Returns true if file exists in storage, false otherwise
-   */
-  private async isImageAccessible(imageUrl: string): Promise<boolean> {
-    try {
-      // Parse Firebase Storage URL to extract bucket and path
-      // Format: https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{encodedPath}?alt=media&token=...
-      const urlMatch = imageUrl.match(/firebasestorage\.googleapis\.com\/v0\/b\/([^\/]+)\/o\/([^?]+)/);
-
-      if (!urlMatch) {
-        console.log(`    ⚠️ Not a Firebase Storage URL, assuming accessible: ${imageUrl.substring(0, 60)}...`);
-        return true; // Non-Firebase URLs - assume accessible
-      }
-
-      const bucket = urlMatch[1];
-      const encodedPath = urlMatch[2];
-      const filePath = decodeURIComponent(encodedPath);
-
-      console.log(`    🔍 Checking Firebase Storage: bucket=${bucket}, path=${filePath.substring(0, 50)}...`);
-
-      const admin = getAdmin();
-      const storage = admin.storage();
-      const file = storage.bucket(bucket).file(filePath);
-
-      const [exists] = await file.exists();
-
-      console.log(`    ${exists ? '✅' : '❌'} Firebase Storage file ${exists ? 'EXISTS' : 'NOT FOUND'}: ${filePath.substring(0, 50)}...`);
-      return exists;
-    } catch (err: any) {
-      console.log(`    ❌ Firebase Storage check error: ${err.message}`);
-      // On error, be conservative - don't create groups for files we can't verify
-      return false;
-    }
-  }
-
-  /**
    * Search for matching faces in AWS Face Collection
    * This is what the ArtifactProcessor should NOT be doing
    */
@@ -113,7 +76,7 @@ export class GroupManager {
   async processFaces(userId: string, fileId: string, faces: Face[], interviewId?: string): Promise<FaceGroup[]> {
     console.log('\n🎯 processFaces() CALLED');
     console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    console.log(`🔄 Face matching v2.5 - Firebase Storage file existence check (#237)`);
+    console.log(`🔄 Face matching v3.0 - Simple validation: fileId + boundingBox required (#237)`);
     console.log(`📌 Interview scope: ${interviewId || 'NONE (global matching)'}`);
     if (interviewId) {
       console.log(`  ✅ Groups will be isolated to this interview only`);
@@ -137,18 +100,7 @@ export class GroupManager {
       return [];
     }
 
-    console.log(`  📋 Source file ${fileId} has image URL, verifying accessibility...`);
-
-    // CRITICAL: Verify image is actually accessible (#237)
-    // This catches deleted images, expired URLs, or permission issues
-    // The UI only displays faces whose images successfully load, so we must match that
-    const isAccessible = await this.isImageAccessible(imageUrl);
-    if (!isAccessible) {
-      console.log(`  ⏭️ Skipping all faces - image at ${imageUrl.substring(0, 60)}... is NOT accessible`);
-      return [];
-    }
-
-    console.log(`  ✅ Source file verified: ${fileId} image is accessible`);
+    console.log(`  ✅ Source file ${fileId} has image URL`);
 
     // Log exact structure of received faces
     console.log('📦 Received faces array:');
@@ -502,12 +454,26 @@ export class GroupManager {
 
   /**
    * Create a new face group
-   * v2.2: Now stores interviewId for interview-scoped isolation
+   * v2.6: Simple validation - don't create group if no valid image data (#237)
    */
   private async createGroup(userId: string, faceIds: string[], fileId: string, leaderBoundingBox?: any, interviewId?: string): Promise<string> {
-    // Don't create empty groups (#237)
+    // Don't create empty groups
     if (!faceIds || faceIds.length === 0) {
-      console.log(`    ⏭️ Skipping group creation - no faces provided`);
+      console.log(`    ⏭️ Skipping group - no faces`);
+      return '';
+    }
+
+    // Don't create group without a file to display (#237)
+    if (!fileId) {
+      console.log(`    ⏭️ Skipping group - no fileId (can't display image)`);
+      return '';
+    }
+
+    // Don't create group without valid bounding box (#237)
+    // Need all 4 coordinates to crop the face from the image
+    const bb = leaderBoundingBox;
+    if (!bb || bb.Left === undefined || bb.Top === undefined || bb.Width === undefined || bb.Height === undefined) {
+      console.log(`    ⏭️ Skipping group - invalid bounding box (can't crop face)`);
       return '';
     }
 
