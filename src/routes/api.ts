@@ -17,7 +17,50 @@ import {
 
 const router = Router();
 
-// Mock data removed - using real Firebase data only
+/**
+ * Compares two bounding boxes to determine if they represent the same face.
+ * Uses tolerance-based comparison since AWS Rekognition may return slightly
+ * different coordinates on reprocessing.
+ *
+ * @param faceBox - Bounding box from the face being checked
+ * @param deletedBox - Bounding box from a previously deleted face
+ * @param tolerance - Maximum allowed difference (default 0.05 = 5%)
+ * @returns true if the bounding boxes match within tolerance
+ */
+function boundingBoxesMatch(faceBox: any, deletedBox: any, tolerance = 0.05): boolean {
+  if (!faceBox || !deletedBox) return false;
+
+  return (
+    Math.abs((faceBox.Left || 0) - (deletedBox.Left || 0)) < tolerance &&
+    Math.abs((faceBox.Top || 0) - (deletedBox.Top || 0)) < tolerance &&
+    Math.abs((faceBox.Width || 0) - (deletedBox.Width || 0)) < tolerance &&
+    Math.abs((faceBox.Height || 0) - (deletedBox.Height || 0)) < tolerance
+  );
+}
+
+/**
+ * Filters out faces that were previously deleted by the user.
+ * When images are reprocessed, AWS Rekognition generates new faceIds but
+ * bounding boxes remain consistent, so we match by bounding box coordinates.
+ *
+ * @param faces - Array of detected faces
+ * @param deletedFaces - Array of previously deleted faces with bounding boxes
+ * @returns Filtered array excluding deleted faces
+ */
+function filterDeletedFaces(faces: any[], deletedFaces: any[]): any[] {
+  if (!deletedFaces || deletedFaces.length === 0) return faces;
+
+  return faces.filter(face => {
+    const faceBox = face.boundingBox || face.BoundingBox;
+    if (!faceBox) return true; // Keep faces without bounding box data
+
+    const isDeleted = deletedFaces.some(deleted =>
+      boundingBoxesMatch(faceBox, deleted.boundingBox)
+    );
+
+    return !isDeleted;
+  });
+}
 
 /**
  * POST /api/process-faces
@@ -166,7 +209,17 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
           console.log(`  📂 Found ${faces.length} faces in separate collection`);
         }
       }
-      
+
+      // Filter out faces that were previously deleted by the user (#236)
+      // This prevents deleted faces from reappearing when images are reprocessed
+      if (faces.length > 0 && fileData.deletedFaces) {
+        const originalCount = faces.length;
+        faces = filterDeletedFaces(faces, fileData.deletedFaces);
+        if (faces.length < originalCount) {
+          console.log(`  🗑️ Filtered ${originalCount - faces.length} deleted faces (${faces.length} remaining)`);
+        }
+      }
+
       // Construct proper URL for the image
       let imageUrl = fileData.url || fileData.imageUrl || fileData.downloadURL;
       
