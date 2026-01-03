@@ -76,12 +76,32 @@ export class GroupManager {
   async processFaces(userId: string, fileId: string, faces: Face[], interviewId?: string): Promise<FaceGroup[]> {
     console.log('\n🎯 processFaces() CALLED');
     console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    console.log(`🔄 Face matching v2.2 - with interview-scoped group isolation`);
+    console.log(`🔄 Face matching v2.3 - with image existence validation`);
     console.log(`📌 Interview scope: ${interviewId || 'NONE (global matching)'}`);
     if (interviewId) {
       console.log(`  ✅ Groups will be isolated to this interview only`);
     }
-    
+
+    // CRITICAL: Verify source file exists before processing faces (#237)
+    // AWS may have faceIds for files that were deleted/renamed - don't create groups for them
+    const fileDoc = await this.db.collection('users').doc(userId)
+                                 .collection('files').doc(fileId).get();
+
+    if (!fileDoc.exists) {
+      console.log(`  ⏭️ Skipping all faces - source file ${fileId} does not exist`);
+      return [];
+    }
+
+    const fileData = fileDoc.data();
+    const imageUrl = fileData?.url || fileData?.imageUrl || fileData?.downloadURL;
+
+    if (!imageUrl) {
+      console.log(`  ⏭️ Skipping all faces - source file ${fileId} has no image URL`);
+      return [];
+    }
+
+    console.log(`  ✅ Source file verified: ${fileId} has image URL`);
+
     // Log exact structure of received faces
     console.log('📦 Received faces array:');
     faces.forEach((face, index) => {
@@ -106,13 +126,29 @@ export class GroupManager {
 
     for (const face of faces) {
       console.log(`\n🔍 Processing face ${face.faceId}`);
+
+      // Validate face has required image data - skip faces without valid bounding box (#237)
+      // Without a valid bounding box, we can't render the face thumbnail, so creating
+      // a group for it would result in an empty group (displays "1 face" but no image)
+      const boundingBox = face.boundingBox || (face as any).BoundingBox;
+      if (!boundingBox ||
+          boundingBox.Left === undefined ||
+          boundingBox.Top === undefined ||
+          boundingBox.Width === undefined ||
+          boundingBox.Height === undefined) {
+        console.log(`  ⏭️ Skipping face ${face.faceId} - missing or invalid bounding box (no image data)`);
+        console.log(`    BoundingBox received:`, JSON.stringify(boundingBox));
+        continue;
+      }
+
       console.log(`  📊 Input data:`, {
         faceId: face.faceId,
         matchedFaceIds: face.matchedFaceIds,
         matchedCount: face.matchedFaceIds?.length || 0,
         confidence: face.confidence,
         hasGroupId: !!face.groupId,
-        groupId: face.groupId
+        groupId: face.groupId,
+        boundingBox: { L: boundingBox.Left?.toFixed(3), T: boundingBox.Top?.toFixed(3), W: boundingBox.Width?.toFixed(3), H: boundingBox.Height?.toFixed(3) }
       });
       
       // Log AWS GroupId if present
