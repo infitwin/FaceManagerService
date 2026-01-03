@@ -25,6 +25,8 @@ export interface ProcessFacesRequest {
   userId: string;
   fileId: string;
   faces: Face[];
+  interviewId?: string;  // Interview scope for group isolation
+  batchId?: string;      // Batch ID for tracking
 }
 
 /**
@@ -43,6 +45,7 @@ export interface ProcessFacesResponse {
 export interface FaceGroup {
   groupId: string;
   groupName?: string;
+  interviewId?: string;  // Interview this group belongs to (for isolation)
   faceIds: string[];
   leaderFaceId: string;
   leaderFaceData: {

@@ -73,10 +73,14 @@ export class GroupManager {
    * Process new faces with transitivity-aware grouping
    * This is the core algorithm that ensures A→B→C all get the same GroupId
    */
-  async processFaces(userId: string, fileId: string, faces: Face[]): Promise<FaceGroup[]> {
+  async processFaces(userId: string, fileId: string, faces: Face[], interviewId?: string): Promise<FaceGroup[]> {
     console.log('\n🎯 processFaces() CALLED');
     console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    console.log(`🔄 Face matching v2.1 - with batch grouping for same-file faces`);
+    console.log(`🔄 Face matching v2.2 - with interview-scoped group isolation`);
+    console.log(`📌 Interview scope: ${interviewId || 'NONE (global matching)'}`);
+    if (interviewId) {
+      console.log(`  ✅ Groups will be isolated to this interview only`);
+    }
     
     // Log exact structure of received faces
     console.log('📦 Received faces array:');
@@ -135,9 +139,9 @@ export class GroupManager {
       }
       
       if (matchedFaceIds.length > 0) {
-        // Face has matches - find existing groups
+        // Face has matches - find existing groups (scoped to interview if provided)
         console.log(`  🔍 Searching for groups containing these matched faces...`);
-        const existingGroups = await this.findGroupsContainingFaces(userId, matchedFaceIds);
+        const existingGroups = await this.findGroupsContainingFaces(userId, matchedFaceIds, interviewId);
         console.log(`  📦 Found ${existingGroups.length} existing groups containing matched faces`);
         if (existingGroups.length > 0) {
           console.log(`  📋 Existing groups:`, existingGroups.map(g => ({
@@ -151,7 +155,7 @@ export class GroupManager {
           // No existing groups - create new group with ONLY this face
           // The matched faces will be grouped naturally when they are processed
           console.log(`  Creating new group for face (matches will be grouped when processed)`);
-          const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox);
+          const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox, interviewId);
           
           // Create face document for this face
           await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
@@ -199,7 +203,7 @@ export class GroupManager {
       } else {
         // No matches - create single-face group
         console.log(`  No matches - creating new single-face group`);
-        const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox);
+        const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox, interviewId);
         
         // Create face document for this face
         await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
@@ -357,9 +361,11 @@ export class GroupManager {
   /**
    * Find all groups that contain any of the specified face IDs
    * FIXED: Now looks up face documents to find their groups instead of searching groups directly
+   * v2.2: Now filters by interviewId for interview-scoped isolation
    */
-  private async findGroupsContainingFaces(userId: string, faceIds: string[]): Promise<FaceGroup[]> {
+  private async findGroupsContainingFaces(userId: string, faceIds: string[], interviewId?: string): Promise<FaceGroup[]> {
     console.log(`    🔍 Looking up groups for ${faceIds.length} face IDs`);
+    console.log(`    📌 Interview filter: ${interviewId || 'NONE (all groups)'}`);
 
     if (faceIds.length === 0) {
       console.log(`    ⚠️  No face IDs provided`);
@@ -386,12 +392,18 @@ export class GroupManager {
 
         groupsQuery.forEach((doc) => {
           const group = doc.data() as FaceGroup;
+
+          // INTERVIEW SCOPING: If interviewId is provided, only match groups from same interview
+          if (interviewId && group.interviewId && group.interviewId !== interviewId) {
+            console.log(`      ⏭️ Skipping group ${group.groupId} (interview: ${group.interviewId}) - different interview`);
+            return; // Skip groups from different interviews
+          }
+
           // Only add if we haven't seen this group yet
           if (!foundGroupIds.has(group.groupId)) {
             foundGroupIds.add(group.groupId);
             groups.push(group);
-            console.log(`      ✓ Group ${group.groupId} contains ${group.faceIds?.length || 0} faces (name: ${group.groupName || '(unnamed)'})`);
-
+            console.log(`      ✓ Group ${group.groupId} contains ${group.faceIds?.length || 0} faces (name: ${group.groupName || '(unnamed)'}, interview: ${group.interviewId || 'global'})`);
           }
         });
       } catch (error) {
@@ -399,21 +411,23 @@ export class GroupManager {
       }
     }
 
-    console.log(`    📊 Found ${groups.length} unique groups containing matched faces`);
+    console.log(`    📊 Found ${groups.length} unique groups containing matched faces (interview-scoped: ${!!interviewId})`);
 
     return groups;
   }
 
   /**
    * Create a new face group
+   * v2.2: Now stores interviewId for interview-scoped isolation
    */
-  private async createGroup(userId: string, faceIds: string[], fileId: string, leaderBoundingBox?: any): Promise<string> {
+  private async createGroup(userId: string, faceIds: string[], fileId: string, leaderBoundingBox?: any, interviewId?: string): Promise<string> {
     const groupId = this.generateGroupId();
     const groupRef = this.db.collection('users').doc(userId)
                            .collection('faceGroups').doc(groupId);
-    
+
     const groupData: Partial<FaceGroup> = {
       groupId,
+      interviewId,  // Store interview scope for isolation
       faceIds,
       leaderFaceId: faceIds[0],  // First face is the leader
       leaderFaceData: {
@@ -426,9 +440,9 @@ export class GroupManager {
       createdAt: FieldValue.serverTimestamp() as any,
       updatedAt: FieldValue.serverTimestamp() as any
     };
-    
+
     await groupRef.set(groupData);
-    console.log(`    Created group ${groupId} with ${faceIds.length} faces, leader: ${faceIds[0]}`);
+    console.log(`    Created group ${groupId} with ${faceIds.length} faces, leader: ${faceIds[0]}, interview: ${interviewId || 'global'}`);
     return groupId;
   }
 

@@ -31,7 +31,13 @@ router.post('/process-faces', async (req: Request, res: Response) => {
   console.log('🔑 Body keys:', Object.keys(req.body || {}));
   
   try {
-    const { userId, fileId, faces } = req.body as ProcessFacesRequest;
+    const { userId, fileId, faces, interviewId } = req.body as ProcessFacesRequest;
+
+    // Log interview scoping for debugging
+    console.log(`🎯 Interview scope: ${interviewId || 'NONE (global matching)'}`);
+    if (interviewId) {
+      console.log(`  📌 Groups will be scoped to interview: ${interviewId}`);
+    }
     
     // Validate request with detailed logging
     if (!userId || !fileId || !faces || !Array.isArray(faces)) {
@@ -65,8 +71,8 @@ router.post('/process-faces', async (req: Request, res: Response) => {
       } : 'NO FACES'
     });
     
-    // Process faces with transitivity
-    const groups = await groupManager.processFaces(userId, fileId, faces);
+    // Process faces with transitivity (scoped to interview if provided)
+    const groups = await groupManager.processFaces(userId, fileId, faces, interviewId);
     
     const response: ProcessFacesResponse = {
       success: true,
