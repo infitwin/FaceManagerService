@@ -7,8 +7,6 @@ import { getDb, getAdmin } from '../config/firebase';
 import { Face, FaceGroup, FileFaceUpdate } from '../types';
 import { FieldValue } from 'firebase-admin/firestore';
 import { RekognitionClient, SearchFacesCommand, DeleteFacesCommand } from '@aws-sdk/client-rekognition';
-import https from 'https';
-import http from 'http';
 
 export class GroupManager {
   private rekognition: RekognitionClient | null = null;
@@ -41,43 +39,40 @@ export class GroupManager {
   }
 
   /**
-   * Verify that an image URL is actually accessible (#237)
-   * This catches cases where:
-   * - Image was deleted from storage
-   * - URL is expired/invalid
-   * - CORS or permission issues
-   * Returns true if image is accessible, false otherwise
+   * Verify that an image exists in Firebase Storage (#237)
+   * Uses Firebase Admin SDK to directly check file existence - more reliable than HTTP
+   * Returns true if file exists in storage, false otherwise
    */
   private async isImageAccessible(imageUrl: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      try {
-        const url = new URL(imageUrl);
-        const client = url.protocol === 'https:' ? https : http;
+    try {
+      // Parse Firebase Storage URL to extract bucket and path
+      // Format: https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{encodedPath}?alt=media&token=...
+      const urlMatch = imageUrl.match(/firebasestorage\.googleapis\.com\/v0\/b\/([^\/]+)\/o\/([^?]+)/);
 
-        const req = client.request(url, { method: 'HEAD', timeout: 5000 }, (res) => {
-          // 2xx status codes mean image is accessible
-          const isAccessible = res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300;
-          console.log(`    🔗 Image check: ${imageUrl.substring(0, 60)}... -> ${res.statusCode} (${isAccessible ? 'accessible' : 'NOT accessible'})`);
-          resolve(isAccessible);
-        });
-
-        req.on('error', (err) => {
-          console.log(`    ❌ Image check failed: ${imageUrl.substring(0, 60)}... -> ${err.message}`);
-          resolve(false);
-        });
-
-        req.on('timeout', () => {
-          console.log(`    ⏱️ Image check timeout: ${imageUrl.substring(0, 60)}...`);
-          req.destroy();
-          resolve(false);
-        });
-
-        req.end();
-      } catch (err) {
-        console.log(`    ❌ Image URL parse error: ${imageUrl} -> ${err}`);
-        resolve(false);
+      if (!urlMatch) {
+        console.log(`    ⚠️ Not a Firebase Storage URL, assuming accessible: ${imageUrl.substring(0, 60)}...`);
+        return true; // Non-Firebase URLs - assume accessible
       }
-    });
+
+      const bucket = urlMatch[1];
+      const encodedPath = urlMatch[2];
+      const filePath = decodeURIComponent(encodedPath);
+
+      console.log(`    🔍 Checking Firebase Storage: bucket=${bucket}, path=${filePath.substring(0, 50)}...`);
+
+      const admin = getAdmin();
+      const storage = admin.storage();
+      const file = storage.bucket(bucket).file(filePath);
+
+      const [exists] = await file.exists();
+
+      console.log(`    ${exists ? '✅' : '❌'} Firebase Storage file ${exists ? 'EXISTS' : 'NOT FOUND'}: ${filePath.substring(0, 50)}...`);
+      return exists;
+    } catch (err: any) {
+      console.log(`    ❌ Firebase Storage check error: ${err.message}`);
+      // On error, be conservative - don't create groups for files we can't verify
+      return false;
+    }
   }
 
   /**
@@ -118,7 +113,7 @@ export class GroupManager {
   async processFaces(userId: string, fileId: string, faces: Face[], interviewId?: string): Promise<FaceGroup[]> {
     console.log('\n🎯 processFaces() CALLED');
     console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    console.log(`🔄 Face matching v2.4 - with HTTP image accessibility validation (#237)`);
+    console.log(`🔄 Face matching v2.5 - Firebase Storage file existence check (#237)`);
     console.log(`📌 Interview scope: ${interviewId || 'NONE (global matching)'}`);
     if (interviewId) {
       console.log(`  ✅ Groups will be isolated to this interview only`);
