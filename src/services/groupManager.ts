@@ -421,6 +421,12 @@ export class GroupManager {
    * v2.2: Now stores interviewId for interview-scoped isolation
    */
   private async createGroup(userId: string, faceIds: string[], fileId: string, leaderBoundingBox?: any, interviewId?: string): Promise<string> {
+    // Don't create empty groups (#237)
+    if (!faceIds || faceIds.length === 0) {
+      console.log(`    ⏭️ Skipping group creation - no faces provided`);
+      return '';
+    }
+
     const groupId = this.generateGroupId();
     const groupRef = this.db.collection('users').doc(userId)
                            .collection('faceGroups').doc(groupId);

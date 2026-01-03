@@ -220,6 +220,12 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
         }
       }
 
+      // Skip files with no remaining faces - don't create empty groups (#237)
+      if (faces.length === 0) {
+        console.log(`  ⏭️ Skipping file ${fileId} - no faces remaining after filtering`);
+        continue;
+      }
+
       // Construct proper URL for the image
       let imageUrl = fileData.url || fileData.imageUrl || fileData.downloadURL;
       
