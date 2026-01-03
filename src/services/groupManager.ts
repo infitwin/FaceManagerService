@@ -628,10 +628,24 @@ export class GroupManager {
       
       // Update leader if removed face was the leader
       if (groupData.leaderFaceId === faceId && updatedFaceIds.length > 0) {
-        updateData.leaderFaceId = updatedFaceIds[0];
-        // Note: We'd need to fetch the new leader's data for full update
-        // For now, just updating the ID
-        console.log(`    👑 Updated leader face to: ${updatedFaceIds[0]}`);
+        const newLeaderFaceId = updatedFaceIds[0];
+        updateData.leaderFaceId = newLeaderFaceId;
+
+        // Fetch the new leader's face data to update leaderFaceData
+        const newLeaderFaceRef = this.db.collection('users').doc(userId)
+                                        .collection('faces').doc(newLeaderFaceId);
+        const newLeaderFaceDoc = await newLeaderFaceRef.get();
+
+        if (newLeaderFaceDoc.exists) {
+          const newLeaderData = newLeaderFaceDoc.data();
+          updateData.leaderFaceData = {
+            fileId: newLeaderData?.fileId || groupData.leaderFaceData?.fileId || '',
+            boundingBox: newLeaderData?.boundingBox || {}
+          };
+          console.log(`    👑 Updated leader face to: ${newLeaderFaceId} (fileId: ${newLeaderData?.fileId})`);
+        } else {
+          console.log(`    ⚠️ Updated leader face to: ${newLeaderFaceId} (face doc not found, keeping old leaderFaceData)`);
+        }
       }
       
       // Update the group with the remaining faces
