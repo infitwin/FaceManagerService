@@ -39,26 +39,40 @@ function boundingBoxesMatch(faceBox: any, deletedBox: any, tolerance = 0.05): bo
 }
 
 /**
- * Filters out faces that were previously deleted by the user.
- * When images are reprocessed, AWS Rekognition generates new faceIds but
- * bounding boxes remain consistent, so we match by bounding box coordinates.
+ * ELEGANT SOLUTION (#237): Only keep faces that EXIST in extractedFaces.
+ * Instead of tracking deleted faces, we check the source of truth (extractedFaces).
+ * If a face was deleted, it won't be in extractedFaces - so we don't process it.
+ * This avoids the need for separate deletedFaces tracking.
  *
- * @param faces - Array of detected faces
- * @param deletedFaces - Array of previously deleted faces with bounding boxes
- * @returns Filtered array excluding deleted faces
+ * @param detectedFaces - Newly detected faces from Rekognition
+ * @param extractedFaces - Faces stored in Firestore (user's approved faces)
+ * @returns Filtered array containing only faces that exist in extractedFaces
  */
-function filterDeletedFaces(faces: any[], deletedFaces: any[]): any[] {
-  if (!deletedFaces || deletedFaces.length === 0) return faces;
+function filterToExistingFaces(detectedFaces: any[], extractedFaces: any[]): any[] {
+  if (!extractedFaces || extractedFaces.length === 0) {
+    // No extracted faces means no approved faces - return empty
+    console.log('  ⚠️ No extractedFaces in Firestore - no faces to process');
+    return [];
+  }
 
-  return faces.filter(face => {
-    const faceBox = face.boundingBox || face.BoundingBox;
-    if (!faceBox) return true; // Keep faces without bounding box data
+  return detectedFaces.filter(detected => {
+    const detectedBox = detected.boundingBox || detected.BoundingBox;
+    if (!detectedBox) {
+      console.log('  ⚠️ Detected face has no bounding box - skipping');
+      return false;
+    }
 
-    const isDeleted = deletedFaces.some(deleted =>
-      boundingBoxesMatch(faceBox, deleted.boundingBox)
-    );
+    // Check if this detected face matches any existing face in extractedFaces
+    const existsInExtracted = extractedFaces.some(existing => {
+      const existingBox = existing.boundingBox || existing.BoundingBox;
+      return boundingBoxesMatch(detectedBox, existingBox);
+    });
 
-    return !isDeleted;
+    if (!existsInExtracted) {
+      console.log(`  🚫 Face not in extractedFaces (deleted?) - skipping: bbox=${JSON.stringify(detectedBox).substring(0, 50)}`);
+    }
+
+    return existsInExtracted;
   });
 }
 
@@ -102,29 +116,38 @@ router.post('/process-faces', async (req: Request, res: Response) => {
     
     console.log('✅ VALIDATION PASSED');
 
-    // Filter out deleted faces (#237) - check file document for deletedFaces array
+    // ELEGANT SOLUTION (#237): Only process faces that EXIST in extractedFaces
+    // If a face was deleted by user, it won't be in extractedFaces - we skip it
+    // No need to track deletedFaces separately - extractedFaces is the source of truth
     let filteredFaces = faces;
     const fileDoc = await groupManager.db.collection('users').doc(userId)
                                          .collection('files').doc(fileId).get();
     if (fileDoc.exists) {
       const fileData = fileDoc.data();
-      if (fileData?.deletedFaces && Array.isArray(fileData.deletedFaces) && fileData.deletedFaces.length > 0) {
+      const extractedFaces = fileData?.extractedFaces;
+
+      if (extractedFaces && Array.isArray(extractedFaces)) {
         const originalCount = filteredFaces.length;
-        filteredFaces = filterDeletedFaces(filteredFaces, fileData.deletedFaces);
+        filteredFaces = filterToExistingFaces(faces, extractedFaces);
+        console.log(`  ✅ ELEGANT FILTER: ${filteredFaces.length} of ${originalCount} faces exist in extractedFaces`);
         if (filteredFaces.length < originalCount) {
-          console.log(`  🗑️ Filtered ${originalCount - filteredFaces.length} deleted faces (${filteredFaces.length} remaining)`);
+          console.log(`  🚫 Skipped ${originalCount - filteredFaces.length} faces (not in extractedFaces - likely deleted)`);
         }
+      } else {
+        console.log('  ⚠️ No extractedFaces in Firestore - processing all detected faces');
       }
+    } else {
+      console.log('  ⚠️ File document not found in Firestore - processing all detected faces');
     }
 
     // Skip processing if no faces remain after filtering
     if (filteredFaces.length === 0) {
-      console.log(`  ⏭️ No faces to process after filtering deleted faces`);
+      console.log(`  ⏭️ No faces to process - none exist in extractedFaces`);
       return res.json({
         success: true,
         processedCount: 0,
         groups: [],
-        message: 'No faces to process (all faces were previously deleted)'
+        message: 'No faces to process (faces not in extractedFaces - may have been deleted)'
       });
     }
 
@@ -237,15 +260,10 @@ router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
         }
       }
 
-      // Filter out faces that were previously deleted by the user (#236)
-      // This prevents deleted faces from reappearing when images are reprocessed
-      if (faces.length > 0 && fileData.deletedFaces) {
-        const originalCount = faces.length;
-        faces = filterDeletedFaces(faces, fileData.deletedFaces);
-        if (faces.length < originalCount) {
-          console.log(`  🗑️ Filtered ${originalCount - faces.length} deleted faces (${faces.length} remaining)`);
-        }
-      }
+      // ELEGANT SOLUTION (#237): extractedFaces IS the source of truth
+      // Deleted faces are already removed from extractedFaces, no separate filtering needed
+      // This is cleaner than tracking deletedFaces separately
+      console.log(`  ✅ Using ${faces.length} faces from extractedFaces (source of truth)`)
 
       // Skip files with no remaining faces - don't create empty groups (#237)
       if (faces.length === 0) {
