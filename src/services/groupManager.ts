@@ -39,6 +39,43 @@ export class GroupManager {
   }
 
   /**
+   * Verify that an image exists in Firebase Storage (#237)
+   * Uses Firebase Admin SDK to directly check file existence - more reliable than HTTP
+   * Returns true if file exists in storage, false otherwise
+   */
+  private async isImageAccessible(imageUrl: string): Promise<boolean> {
+    try {
+      // Parse Firebase Storage URL to extract bucket and path
+      // Format: https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{encodedPath}?alt=media&token=...
+      const urlMatch = imageUrl.match(/firebasestorage\.googleapis\.com\/v0\/b\/([^\/]+)\/o\/([^?]+)/);
+
+      if (!urlMatch) {
+        console.log(`    ⚠️ Not a Firebase Storage URL, assuming accessible: ${imageUrl.substring(0, 60)}...`);
+        return true; // Non-Firebase URLs - assume accessible
+      }
+
+      const bucket = urlMatch[1];
+      const encodedPath = urlMatch[2];
+      const filePath = decodeURIComponent(encodedPath);
+
+      console.log(`    🔍 Checking Firebase Storage: bucket=${bucket}, path=${filePath.substring(0, 50)}...`);
+
+      const admin = getAdmin();
+      const storage = admin.storage();
+      const file = storage.bucket(bucket).file(filePath);
+
+      const [exists] = await file.exists();
+
+      console.log(`    ${exists ? '✅' : '❌'} Firebase Storage file ${exists ? 'EXISTS' : 'NOT FOUND'}: ${filePath.substring(0, 50)}...`);
+      return exists;
+    } catch (err: any) {
+      console.log(`    ❌ Firebase Storage check error: ${err.message}`);
+      // On error, be conservative - don't create groups for files we can't verify
+      return false;
+    }
+  }
+
+  /**
    * Search for matching faces in AWS Face Collection
    * This is what the ArtifactProcessor should NOT be doing
    */
@@ -76,7 +113,7 @@ export class GroupManager {
   async processFaces(userId: string, fileId: string, faces: Face[], interviewId?: string): Promise<FaceGroup[]> {
     console.log('\n🎯 processFaces() CALLED');
     console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    console.log(`🔄 Face matching v3.0 - Simple validation: fileId + boundingBox required (#237)`);
+    console.log(`🔄 Face matching v3.1 - Firebase Storage file existence check (#237)`);
     console.log(`📌 Interview scope: ${interviewId || 'NONE (global matching)'}`);
     if (interviewId) {
       console.log(`  ✅ Groups will be isolated to this interview only`);
@@ -100,7 +137,18 @@ export class GroupManager {
       return [];
     }
 
-    console.log(`  ✅ Source file ${fileId} has image URL`);
+    console.log(`  📋 Source file ${fileId} has image URL, verifying accessibility...`);
+
+    // CRITICAL: Verify image is actually accessible (#237)
+    // This catches deleted images, expired URLs, or permission issues
+    // The UI only displays faces whose images successfully load, so we must match that
+    const isAccessible = await this.isImageAccessible(imageUrl);
+    if (!isAccessible) {
+      console.log(`  ⏭️ Skipping all faces - image at ${imageUrl.substring(0, 60)}... is NOT accessible`);
+      return [];
+    }
+
+    console.log(`  ✅ Source file verified: ${fileId} image is accessible`);
 
     // Log exact structure of received faces
     console.log('📦 Received faces array:');
