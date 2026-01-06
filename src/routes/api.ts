@@ -101,25 +101,52 @@ router.post('/process-faces', async (req: Request, res: Response) => {
     }
     
     console.log('✅ VALIDATION PASSED');
+
+    // Filter out deleted faces (#237) - check file document for deletedFaces array
+    let filteredFaces = faces;
+    const fileDoc = await groupManager.db.collection('users').doc(userId)
+                                         .collection('files').doc(fileId).get();
+    if (fileDoc.exists) {
+      const fileData = fileDoc.data();
+      if (fileData?.deletedFaces && Array.isArray(fileData.deletedFaces) && fileData.deletedFaces.length > 0) {
+        const originalCount = filteredFaces.length;
+        filteredFaces = filterDeletedFaces(filteredFaces, fileData.deletedFaces);
+        if (filteredFaces.length < originalCount) {
+          console.log(`  🗑️ Filtered ${originalCount - filteredFaces.length} deleted faces (${filteredFaces.length} remaining)`);
+        }
+      }
+    }
+
+    // Skip processing if no faces remain after filtering
+    if (filteredFaces.length === 0) {
+      console.log(`  ⏭️ No faces to process after filtering deleted faces`);
+      return res.json({
+        success: true,
+        processedCount: 0,
+        groups: [],
+        message: 'No faces to process (all faces were previously deleted)'
+      });
+    }
+
     console.log(`📊 About to process:`, {
       userId: userId,
       fileId: fileId,
-      faceCount: faces.length,
-      firstFace: faces[0] ? {
-        faceId: faces[0].faceId,
-        matchedCount: faces[0].matchedFaceIds?.length,
-        hasGroupId: !!faces[0].groupId,
-        hasBoundingBox: !!faces[0].boundingBox,
-        allKeys: Object.keys(faces[0])
+      faceCount: filteredFaces.length,
+      firstFace: filteredFaces[0] ? {
+        faceId: filteredFaces[0].faceId,
+        matchedCount: filteredFaces[0].matchedFaceIds?.length,
+        hasGroupId: !!filteredFaces[0].groupId,
+        hasBoundingBox: !!filteredFaces[0].boundingBox,
+        allKeys: Object.keys(filteredFaces[0])
       } : 'NO FACES'
     });
-    
+
     // Process faces with transitivity (scoped to interview if provided)
-    const groups = await groupManager.processFaces(userId, fileId, faces, interviewId);
+    const groups = await groupManager.processFaces(userId, fileId, filteredFaces, interviewId);
     
     const response: ProcessFacesResponse = {
       success: true,
-      processedCount: faces.length,
+      processedCount: filteredFaces.length,
       groups,
       message: `Successfully processed ${faces.length} faces into ${groups.length} groups`
     };
