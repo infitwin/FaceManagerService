@@ -113,11 +113,9 @@ export class GroupManager {
   async processFaces(userId: string, fileId: string, faces: Face[], interviewId?: string): Promise<FaceGroup[]> {
     console.log('\n🎯 processFaces() CALLED');
     console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    console.log(`🔄 Face matching v3.1 - Firebase Storage file existence check (#237)`);
-    console.log(`📌 Interview scope: ${interviewId || 'NONE (global matching)'}`);
-    if (interviewId) {
-      console.log(`  ✅ Groups will be isolated to this interview only`);
-    }
+    console.log(`🔄 Face matching v3.2 - Global face groups across all interviews`);
+    console.log(`📌 Interview context: ${interviewId || 'NONE'} (groups are global, used for audit trail)`);
+    console.log(`  ✅ Face groups are shared across all interviews for continuity`);
 
     // CRITICAL: Verify source file exists before processing faces (#237)
     // AWS may have faceIds for files that were deleted/renamed - don't create groups for them
@@ -223,7 +221,7 @@ export class GroupManager {
       }
       
       if (matchedFaceIds.length > 0) {
-        // Face has matches - find existing groups (scoped to interview if provided)
+        // Face has matches - find existing groups (global search across all interviews)
         console.log(`  🔍 Searching for groups containing these matched faces...`);
         const existingGroups = await this.findGroupsContainingFaces(userId, matchedFaceIds, interviewId);
         console.log(`  📦 Found ${existingGroups.length} existing groups containing matched faces`);
@@ -438,12 +436,20 @@ export class GroupManager {
 
   /**
    * Find all groups that contain any of the specified face IDs
-   * FIXED: Now looks up face documents to find their groups instead of searching groups directly
-   * v2.2: Now filters by interviewId for interview-scoped isolation
+   * v3.0: GLOBAL MATCHING - Face groups are now shared across all interviews
+   *
+   * Face groups are preprocessing infrastructure (face recognition/identification),
+   * not interview content. Users identify each person once, and that identification
+   * persists across all processing sessions. Interview graphs (Neo4j Person nodes)
+   * remain separate per interview.
+   *
+   * @param userId - User ID
+   * @param faceIds - Array of face IDs to search for
+   * @param interviewId - Optional, kept for audit trail (shows which interview created the group)
+   * @returns Array of face groups containing any of the specified faces
    */
   private async findGroupsContainingFaces(userId: string, faceIds: string[], interviewId?: string): Promise<FaceGroup[]> {
-    console.log(`    🔍 Looking up groups for ${faceIds.length} face IDs`);
-    console.log(`    📌 Interview filter: ${interviewId || 'NONE (all groups)'}`);
+    console.log(`    🔍 Looking up groups for ${faceIds.length} face IDs (GLOBAL matching)`);
 
     if (faceIds.length === 0) {
       console.log(`    ⚠️  No face IDs provided`);
@@ -471,17 +477,11 @@ export class GroupManager {
         groupsQuery.forEach((doc) => {
           const group = doc.data() as FaceGroup;
 
-          // INTERVIEW SCOPING: If interviewId is provided, only match groups from same interview
-          if (interviewId && group.interviewId && group.interviewId !== interviewId) {
-            console.log(`      ⏭️ Skipping group ${group.groupId} (interview: ${group.interviewId}) - different interview`);
-            return; // Skip groups from different interviews
-          }
-
           // Only add if we haven't seen this group yet
           if (!foundGroupIds.has(group.groupId)) {
             foundGroupIds.add(group.groupId);
             groups.push(group);
-            console.log(`      ✓ Group ${group.groupId} contains ${group.faceIds?.length || 0} faces (name: ${group.groupName || '(unnamed)'}, interview: ${group.interviewId || 'global'})`);
+            console.log(`      ✓ Group ${group.groupId} contains ${group.faceIds?.length || 0} faces (name: ${group.groupName || '(unnamed)'}, created in: ${group.interviewId || 'global'})`);
           }
         });
       } catch (error) {
@@ -489,13 +489,14 @@ export class GroupManager {
       }
     }
 
-    console.log(`    📊 Found ${groups.length} unique groups containing matched faces (interview-scoped: ${!!interviewId})`);
+    console.log(`    📊 Found ${groups.length} unique groups containing matched faces`);
 
     return groups;
   }
 
   /**
    * Create a new face group
+   * v3.2: Groups are global across interviews - interviewId stored for audit trail only
    * v2.6: Simple validation - don't create group if no valid image data (#237)
    */
   private async createGroup(userId: string, faceIds: string[], fileId: string, leaderBoundingBox?: any, interviewId?: string): Promise<string> {
@@ -525,7 +526,7 @@ export class GroupManager {
 
     const groupData: Partial<FaceGroup> = {
       groupId,
-      interviewId,  // Store interview scope for isolation
+      interviewId,  // Audit trail: which interview created this group
       faceIds,
       leaderFaceId: faceIds[0],  // First face is the leader
       leaderFaceData: {
@@ -540,7 +541,7 @@ export class GroupManager {
     };
 
     await groupRef.set(groupData);
-    console.log(`    Created group ${groupId} with ${faceIds.length} faces, leader: ${faceIds[0]}, interview: ${interviewId || 'global'}`);
+    console.log(`    Created group ${groupId} with ${faceIds.length} faces, leader: ${faceIds[0]}, created in interview: ${interviewId || 'N/A'}`);
     return groupId;
   }
 
