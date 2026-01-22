@@ -255,11 +255,8 @@ export class GroupManager {
           // Single group found - add face to it
           const group = existingGroups[0];
           console.log(`  Adding face to existing group ${group.groupId}`);
-          await this.addFaceToGroup(userId, group.groupId, face.faceId, fileId);
-          
-          // Create face document for this face
-          await this.createFaceDocument(userId, face.faceId, group.groupId, fileId, face.boundingBox, face.confidence);
-          
+          await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+
           const updatedGroup = await this.getGroup(userId, group.groupId);
           if (updatedGroup) updatedGroups.push(updatedGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: group.groupId });
@@ -275,11 +272,8 @@ export class GroupManager {
           }
           
           // Add new face to merged group
-          await this.addFaceToGroup(userId, primaryGroupId, face.faceId, fileId);
-          
-          // Create face document for this face
-          await this.createFaceDocument(userId, face.faceId, primaryGroupId, fileId, face.boundingBox, face.confidence);
-          
+          await this.addFaceToExistingGroup(userId, primaryGroupId, face.faceId, fileId, face.boundingBox, face.confidence);
+
           const mergedGroup = await this.getGroup(userId, primaryGroupId);
           if (mergedGroup) updatedGroups.push(mergedGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: primaryGroupId });
@@ -550,36 +544,6 @@ export class GroupManager {
     return groupId;
   }
 
-  /**
-   * Add a face to an existing group
-   */
-  private async addFaceToGroup(userId: string, groupId: string, faceId: string, fileId: string): Promise<void> {
-    const groupRef = this.db.collection('users').doc(userId)
-                           .collection('faceGroups').doc(groupId);
-    
-    // First get the current group to check if face already exists
-    const groupDoc = await groupRef.get();
-    if (groupDoc.exists) {
-      const groupData = groupDoc.data() as FaceGroup;
-      const currentFaceIds = groupData.faceIds || [];
-      
-      // Only update if face is not already in the group
-      if (!currentFaceIds.includes(faceId)) {
-        await groupRef.update({
-          faceIds: FieldValue.arrayUnion(faceId),
-          fileIds: FieldValue.arrayUnion(fileId),
-          faceCount: currentFaceIds.length + 1, // Set exact count
-          updatedAt: FieldValue.serverTimestamp()
-        });
-      } else {
-        // Face already in group, just add the fileId if new
-        await groupRef.update({
-          fileIds: FieldValue.arrayUnion(fileId),
-          updatedAt: FieldValue.serverTimestamp()
-        });
-      }
-    }
-  }
 
   /**
    * Merge two groups (for transitivity)
@@ -766,52 +730,37 @@ export class GroupManager {
   /**
    * Add a face to an existing group (public API method)
    */
-  async addFaceToExistingGroup(userId: string, groupId: string, faceId: string, fileId?: string): Promise<boolean> {
+  async addFaceToExistingGroup(
+    userId: string,
+    groupId: string,
+    faceId: string,
+    fileId: string,
+    boundingBox?: any,
+    confidence?: number
+  ): Promise<boolean> {
     try {
       const groupRef = this.db.collection('users').doc(userId)
                              .collection('faceGroups').doc(groupId);
 
-      const groupDoc = await groupRef.get();
-      if (!groupDoc.exists) {
-        console.log(`Group ${groupId} not found`);
-        return false;
-      }
-
-      const groupData = groupDoc.data() as FaceGroup;
-      const currentFaceIds = groupData.faceIds || [];
-
-      // Check if face is already in the group
-      if (currentFaceIds.includes(faceId)) {
-        console.log(`Face ${faceId} already in group ${groupId}`);
-        return true;
-      }
-
-      // Add the face to the group's faceIds array
-      const updatedFaceIds = [...currentFaceIds, faceId];
-
-      // Create a face document in the faces collection
-      const faceRef = this.db.collection('users').doc(userId)
-                            .collection('faces').doc(faceId);
-
-      await faceRef.set({
-        faceId,
-        groupId,
-        fileId: fileId || 'manual',
-        addedAt: FieldValue.serverTimestamp()
-      }, { merge: true });
-
-      console.log(`    ✅ Created/updated face document: /users/${userId}/faces/${faceId}`);
-
-      // Update the group with the new face
+      // Update group FIRST - arrayUnion is atomic and handles duplicates automatically
+      // This prevents race conditions when multiple operations try to add the same face
       await groupRef.update({
-        faceIds: updatedFaceIds,
-        faceCount: updatedFaceIds.length,
+        faceIds: FieldValue.arrayUnion(faceId),
+        fileIds: FieldValue.arrayUnion(fileId),
         updatedAt: FieldValue.serverTimestamp()
       });
 
-      console.log(`✅ Added face ${faceId} to group ${groupId}`);
+      // Only create face document if group update succeeded
+      // This prevents orphan face documents if group doesn't exist
+      await this.createFaceDocument(userId, faceId, groupId, fileId, boundingBox, confidence);
+
+      console.log(`✅ Added face ${faceId} to group ${groupId} (idempotent)`);
       return true;
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === 'not-found') {
+        console.warn(`Cannot add face ${faceId} - group ${groupId} does not exist`);
+        return false;
+      }
       console.error('Error adding face to group:', error);
       throw error;
     }
