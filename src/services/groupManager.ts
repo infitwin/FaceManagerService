@@ -874,6 +874,117 @@ export class GroupManager {
     }
   }
 
+  /**
+   * Cascade cleanup: delete faces and update groups when a file is deleted.
+   * Removes face documents from Firestore, faces from AWS Rekognition,
+   * and updates/deletes affected face groups.
+   */
+  async cleanupFacesByFile(userId: string, fileId: string): Promise<{
+    facesDeleted: number;
+    groupsUpdated: number;
+    groupsDeleted: number;
+    awsFacesDeleted: number;
+  }> {
+    console.log(`\n🧹 cleanupFacesByFile: userId=${userId}, fileId=${fileId}`);
+
+    const stats = {
+      facesDeleted: 0,
+      groupsUpdated: 0,
+      groupsDeleted: 0,
+      awsFacesDeleted: 0
+    };
+
+    // 1. Find all faces from this file
+    const facesSnapshot = await this.db
+      .collection('users').doc(userId)
+      .collection('faces')
+      .where('fileId', '==', fileId)
+      .get();
+
+    if (facesSnapshot.empty) {
+      console.log('  No faces found for this file');
+      return stats;
+    }
+
+    const faceIdsToDelete = facesSnapshot.docs.map(doc => doc.id);
+    console.log(`  Found ${faceIdsToDelete.length} faces to delete`);
+
+    // 2. Delete from AWS Rekognition (uses faceIds as FaceIds)
+    try {
+      const rekognition = this.getAWSClient();
+      const deleteCommand = new DeleteFacesCommand({
+        CollectionId: `face_coll_${userId}`,
+        FaceIds: faceIdsToDelete
+      });
+
+      const awsResponse = await rekognition.send(deleteCommand);
+      stats.awsFacesDeleted = awsResponse.DeletedFaces?.length || 0;
+      console.log(`  Deleted ${stats.awsFacesDeleted} faces from AWS Rekognition`);
+    } catch (awsError: any) {
+      // Continue with Firestore cleanup even if AWS fails
+      console.error(`  AWS cleanup failed (continuing): ${awsError.message}`);
+    }
+
+    // 3. Find and update groups containing these faces
+    const faceIdSet = new Set(faceIdsToDelete);
+    const groupsSnapshot = await this.db
+      .collection('users').doc(userId)
+      .collection('faceGroups')
+      .where('fileIds', 'array-contains', fileId)
+      .get();
+
+    for (const groupDoc of groupsSnapshot.docs) {
+      const groupData = groupDoc.data() as FaceGroup;
+      const updatedFaceIds = (groupData.faceIds || []).filter(id => !faceIdSet.has(id));
+      const updatedFileIds = (groupData.fileIds || []).filter(id => id !== fileId);
+
+      if (updatedFaceIds.length === 0) {
+        // Group is now empty - delete it
+        await groupDoc.ref.delete();
+        stats.groupsDeleted++;
+        console.log(`  Deleted empty group ${groupDoc.id}`);
+      } else if (updatedFaceIds.length < (groupData.faceIds || []).length) {
+        // Group still has faces - update it
+        const updateData: any = {
+          faceIds: updatedFaceIds,
+          fileIds: updatedFileIds,
+          faceCount: updatedFaceIds.length,
+          updatedAt: FieldValue.serverTimestamp()
+        };
+
+        // Update leader if it was one of the deleted faces
+        if (faceIdSet.has(groupData.leaderFaceId || '')) {
+          updateData.leaderFaceId = updatedFaceIds[0];
+          // Try to get new leader's face data
+          const newLeaderDoc = await this.db.collection('users').doc(userId)
+            .collection('faces').doc(updatedFaceIds[0]).get();
+          if (newLeaderDoc.exists) {
+            const newLeaderData = newLeaderDoc.data();
+            updateData.leaderFaceData = {
+              fileId: newLeaderData?.fileId || '',
+              boundingBox: newLeaderData?.boundingBox || {}
+            };
+          }
+        }
+
+        await groupDoc.ref.update(updateData);
+        stats.groupsUpdated++;
+        console.log(`  Updated group ${groupDoc.id}: ${(groupData.faceIds || []).length} -> ${updatedFaceIds.length} faces`);
+      }
+    }
+
+    // 4. Delete face documents from Firestore
+    const batch = this.db.batch();
+    for (const faceDoc of facesSnapshot.docs) {
+      batch.delete(faceDoc.ref);
+    }
+    await batch.commit();
+    stats.facesDeleted = faceIdsToDelete.length;
+
+    console.log(`  Cleanup complete:`, stats);
+    return stats;
+  }
+
   async clearAllGroups(userId: string): Promise<number> {
     const groupsRef = this.db.collection('users').doc(userId).collection('faceGroups');
     const snapshot = await groupsRef.get();

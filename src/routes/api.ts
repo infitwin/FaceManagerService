@@ -610,6 +610,40 @@ router.delete('/groups/:groupId', async (req: Request, res: Response) => {
 });
 
 /**
+ * DELETE /api/cleanup-faces-by-file
+ * Cascade cleanup when a file is deleted: removes face documents,
+ * updates/deletes affected groups, and removes from AWS Rekognition.
+ */
+router.delete('/cleanup-faces-by-file', async (req: Request, res: Response) => {
+  try {
+    const { userId, fileId } = req.body;
+
+    if (!userId || !fileId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: userId, fileId'
+      });
+    }
+
+    console.log(`DELETE /cleanup-faces-by-file: userId=${userId}, fileId=${fileId}`);
+
+    const stats = await groupManager.cleanupFacesByFile(userId, fileId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Face cleanup completed',
+      stats
+    });
+  } catch (error: any) {
+    console.error('Face cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Face cleanup failed'
+    });
+  }
+});
+
+/**
  * DELETE /api/test/reset/:userId
  * Clear all groups for testing
  */
