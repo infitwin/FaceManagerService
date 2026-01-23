@@ -253,10 +253,16 @@ export class GroupManager {
           fileUpdates.push({ fileId, faceId: face.faceId, groupId });
           
         } else if (existingGroups.length === 1) {
-          // Single group found - add face to it
+          // Single group found - add face to it if not already present
           const group = existingGroups[0];
-          console.log(`  Adding face to existing group ${group.groupId}`);
-          await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+
+          // Check if face is already in this group to prevent duplicates
+          if (group.faceIds && group.faceIds.includes(face.faceId)) {
+            console.log(`  ⏭️  Face ${face.faceId} already in group ${group.groupId} - skipping add operation`);
+          } else {
+            console.log(`  Adding face to existing group ${group.groupId}`);
+            await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+          }
 
           const updatedGroup = await this.getGroup(userId, group.groupId);
           if (updatedGroup) updatedGroups.push(updatedGroup);
@@ -266,17 +272,25 @@ export class GroupManager {
           // Multiple groups found - MERGE them (key to transitivity!)
           console.log(`  ⚡ Merging ${existingGroups.length} groups - faces belong to same person!`);
           const primaryGroupId = existingGroups[0].groupId;
-          
+
           // Merge all secondary groups into primary
           for (let i = 1; i < existingGroups.length; i++) {
             await this.mergeGroups(userId, primaryGroupId, existingGroups[i].groupId);
           }
-          
-          // Add new face to merged group
-          await this.addFaceToExistingGroup(userId, primaryGroupId, face.faceId, fileId, face.boundingBox, face.confidence);
 
+          // Get updated primary group after merge to check if face already present
           const mergedGroup = await this.getGroup(userId, primaryGroupId);
-          if (mergedGroup) updatedGroups.push(mergedGroup);
+
+          // Add new face to merged group only if not already present
+          if (mergedGroup && mergedGroup.faceIds && mergedGroup.faceIds.includes(face.faceId)) {
+            console.log(`  ⏭️  Face ${face.faceId} already in merged group ${primaryGroupId} - skipping add operation`);
+          } else {
+            console.log(`  Adding face to merged group ${primaryGroupId}`);
+            await this.addFaceToExistingGroup(userId, primaryGroupId, face.faceId, fileId, face.boundingBox, face.confidence);
+          }
+
+          const updatedMergedGroup = await this.getGroup(userId, primaryGroupId);
+          if (updatedMergedGroup) updatedGroups.push(updatedMergedGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: primaryGroupId });
         }
       } else {
@@ -285,10 +299,16 @@ export class GroupManager {
         const existingGroups = await this.findGroupsContainingFaces(userId, [face.faceId], interviewId);
 
         if (existingGroups.length > 0) {
-          // Face is already in a group - update it
+          // Face is already in a group - check if already added to prevent duplicates
           const group = existingGroups[0];
-          console.log(`  Face already in group ${group.groupId} - updating it`);
-          await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+
+          // Check if face is already in this group
+          if (group.faceIds && group.faceIds.includes(face.faceId)) {
+            console.log(`  ⏭️  Face ${face.faceId} already in group ${group.groupId} - skipping add operation`);
+          } else {
+            console.log(`  Face already in group ${group.groupId} - updating it`);
+            await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+          }
 
           const updatedGroup = await this.getGroup(userId, group.groupId);
           if (updatedGroup) updatedGroups.push(updatedGroup);
