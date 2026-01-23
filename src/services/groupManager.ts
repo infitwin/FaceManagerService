@@ -222,8 +222,11 @@ export class GroupManager {
       
       if (matchedFaceIds.length > 0) {
         // Face has matches - find existing groups (global search across all interviews)
-        console.log(`  🔍 Searching for groups containing these matched faces...`);
-        const existingGroups = await this.findGroupsContainingFaces(userId, matchedFaceIds, interviewId);
+        // CRITICAL: Search for groups containing EITHER the current face OR any matched faces
+        // This ensures we find existing groups when reprocessing the same face
+        const searchFaceIds = [face.faceId, ...matchedFaceIds];
+        console.log(`  🔍 Searching for groups containing ${searchFaceIds.length} face IDs (current + matches)...`);
+        const existingGroups = await this.findGroupsContainingFaces(userId, searchFaceIds, interviewId);
         console.log(`  📦 Found ${existingGroups.length} existing groups containing matched faces`);
         if (existingGroups.length > 0) {
           console.log(`  📋 Existing groups:`, existingGroups.map(g => ({
@@ -277,16 +280,31 @@ export class GroupManager {
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: primaryGroupId });
         }
       } else {
-        // No matches - create single-face group
-        console.log(`  No matches - creating new single-face group`);
-        const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox, interviewId);
-        
-        // Create face document for this face
-        await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
-        
-        const newGroup = await this.getGroup(userId, groupId);
-        if (newGroup) updatedGroups.push(newGroup);
-        fileUpdates.push({ fileId, faceId: face.faceId, groupId });
+        // No matches - but check if this face is already in an existing group
+        console.log(`  No matches found - checking if face is already in a group...`);
+        const existingGroups = await this.findGroupsContainingFaces(userId, [face.faceId], interviewId);
+
+        if (existingGroups.length > 0) {
+          // Face is already in a group - update it
+          const group = existingGroups[0];
+          console.log(`  Face already in group ${group.groupId} - updating it`);
+          await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+
+          const updatedGroup = await this.getGroup(userId, group.groupId);
+          if (updatedGroup) updatedGroups.push(updatedGroup);
+          fileUpdates.push({ fileId, faceId: face.faceId, groupId: group.groupId });
+        } else {
+          // Face is not in any group - create new single-face group
+          console.log(`  Face not in any group - creating new single-face group`);
+          const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox, interviewId);
+
+          // Create face document for this face
+          await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
+
+          const newGroup = await this.getGroup(userId, groupId);
+          if (newGroup) updatedGroups.push(newGroup);
+          fileUpdates.push({ fileId, faceId: face.faceId, groupId });
+        }
       }
     }
 
