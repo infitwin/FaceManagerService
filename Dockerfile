@@ -2,7 +2,7 @@
 # Multi-stage build for optimized production image
 
 # Stage 1: Build
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ COPY src ./src
 RUN npm run build
 
 # Stage 2: Production
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
@@ -36,9 +36,8 @@ COPY --from=builder /app/dist ./dist
 # Copy public files
 COPY public ./public
 
-# Copy Firebase credentials (will be mounted in Cloud Run)
-# Note: In production, use Secret Manager instead
-COPY firebase-credentials.json ./
+# Firebase credentials will be provided via Secret Manager in Cloud Run
+# No need to copy firebase-credentials.json
 
 # Set environment variables
 ENV NODE_ENV=production

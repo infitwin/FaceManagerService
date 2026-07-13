@@ -5,6 +5,7 @@
 
 import { Router, Request, Response } from 'express';
 import { groupManager } from '../services/groupManager';
+import { getAdmin } from '../config/firebase';
 import { 
   ProcessFacesRequest, 
   ProcessFacesResponse,
@@ -12,41 +13,182 @@ import {
   GroupOperationResponse,
   Face
 } from '../types';
-import fetch from 'node-fetch';
+// Removed unused fetch import
 
 const router = Router();
+
+/**
+ * Compares two bounding boxes to determine if they represent the same face.
+ * Uses tolerance-based comparison since AWS Rekognition may return slightly
+ * different coordinates on reprocessing.
+ *
+ * @param faceBox - Bounding box from the face being checked
+ * @param deletedBox - Bounding box from a previously deleted face
+ * @param tolerance - Maximum allowed difference (default 0.05 = 5%)
+ * @returns true if the bounding boxes match within tolerance
+ */
+function boundingBoxesMatch(faceBox: any, deletedBox: any, tolerance = 0.05): boolean {
+  if (!faceBox || !deletedBox) return false;
+
+  return (
+    Math.abs((faceBox.Left || 0) - (deletedBox.Left || 0)) < tolerance &&
+    Math.abs((faceBox.Top || 0) - (deletedBox.Top || 0)) < tolerance &&
+    Math.abs((faceBox.Width || 0) - (deletedBox.Width || 0)) < tolerance &&
+    Math.abs((faceBox.Height || 0) - (deletedBox.Height || 0)) < tolerance
+  );
+}
+
+/**
+ * ELEGANT SOLUTION (#237): Only keep faces that EXIST in extractedFaces.
+ * Instead of tracking deleted faces, we check the source of truth (extractedFaces).
+ * If a face was deleted, it won't be in extractedFaces - so we don't process it.
+ * This avoids the need for separate deletedFaces tracking.
+ *
+ * @param detectedFaces - Newly detected faces from Rekognition
+ * @param extractedFaces - Faces stored in Firestore (user's approved faces)
+ * @returns Filtered array containing only faces that exist in extractedFaces
+ */
+function filterToExistingFaces(detectedFaces: any[], extractedFaces: any[]): any[] {
+  if (!extractedFaces || extractedFaces.length === 0) {
+    // No extracted faces means no approved faces - return empty
+    console.log('  ⚠️ No extractedFaces in Firestore - no faces to process');
+    return [];
+  }
+
+  return detectedFaces.filter(detected => {
+    const detectedBox = detected.boundingBox || detected.BoundingBox;
+    if (!detectedBox) {
+      console.log('  ⚠️ Detected face has no bounding box - skipping');
+      return false;
+    }
+
+    // Check if this detected face matches any existing face in extractedFaces
+    const existsInExtracted = extractedFaces.some(existing => {
+      const existingBox = existing.boundingBox || existing.BoundingBox;
+      return boundingBoxesMatch(detectedBox, existingBox);
+    });
+
+    if (!existsInExtracted) {
+      console.log(`  🚫 Face not in extractedFaces (deleted?) - skipping: bbox=${JSON.stringify(detectedBox).substring(0, 50)}`);
+    }
+
+    return existsInExtracted;
+  });
+}
 
 /**
  * POST /api/process-faces
  * Main endpoint for processing faces with transitivity
  */
 router.post('/process-faces', async (req: Request, res: Response) => {
+  console.log('\n════════════════════════════════════════');
+  console.log('📥 /api/process-faces ENDPOINT HIT');
+  console.log('📋 Raw request body:', JSON.stringify(req.body, null, 2));
+  console.log('🔍 Body type:', typeof req.body);
+  console.log('🔑 Body keys:', Object.keys(req.body || {}));
+  
   try {
-    const { userId, fileId, faces } = req.body as ProcessFacesRequest;
+    const { userId, fileId, faces, interviewId } = req.body as ProcessFacesRequest;
+
+    // Log interview scoping for debugging
+    console.log(`🎯 Interview scope: ${interviewId || 'NONE (global matching)'}`);
+    if (interviewId) {
+      console.log(`  📌 Groups will be scoped to interview: ${interviewId}`);
+    }
     
-    // Validate request
+    // Validate request with detailed logging
     if (!userId || !fileId || !faces || !Array.isArray(faces)) {
+      console.error('❌ VALIDATION FAILED:');
+      console.error('  userId present?', !!userId, 'value:', userId);
+      console.error('  fileId present?', !!fileId, 'value:', fileId);
+      console.error('  faces present?', !!faces);
+      console.error('  faces is array?', Array.isArray(faces));
+      console.error('  faces type:', typeof faces);
+      if (faces) {
+        console.error('  faces length?', faces.length);
+        console.error('  faces sample:', faces[0]);
+      }
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: userId, fileId, faces[]'
       });
     }
     
-    console.log(`\n🚀 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
-    
-    // Process faces with transitivity
-    const groups = await groupManager.processFaces(userId, fileId, faces);
+    console.log('✅ VALIDATION PASSED');
+
+    // ELEGANT SOLUTION (#237): Only process faces that EXIST in extractedFaces
+    // If a face was deleted by user, it won't be in extractedFaces - we skip it
+    // No need to track deletedFaces separately - extractedFaces is the source of truth
+    let filteredFaces = faces;
+    const fileDoc = await groupManager.db.collection('users').doc(userId)
+                                         .collection('files').doc(fileId).get();
+    if (fileDoc.exists) {
+      const fileData = fileDoc.data();
+      const extractedFaces = fileData?.extractedFaces;
+
+      if (extractedFaces && Array.isArray(extractedFaces)) {
+        const originalCount = filteredFaces.length;
+        filteredFaces = filterToExistingFaces(faces, extractedFaces);
+        console.log(`  ✅ ELEGANT FILTER: ${filteredFaces.length} of ${originalCount} faces exist in extractedFaces`);
+        if (filteredFaces.length < originalCount) {
+          console.log(`  🚫 Skipped ${originalCount - filteredFaces.length} faces (not in extractedFaces - likely deleted)`);
+        }
+      } else {
+        console.log('  ⚠️ No extractedFaces in Firestore - processing all detected faces');
+      }
+    } else {
+      console.log('  ⚠️ File document not found in Firestore - processing all detected faces');
+    }
+
+    // Skip processing if no faces remain after filtering
+    if (filteredFaces.length === 0) {
+      console.log(`  ⏭️ No faces to process - none exist in extractedFaces`);
+      return res.json({
+        success: true,
+        processedCount: 0,
+        groups: [],
+        message: 'No faces to process (faces not in extractedFaces - may have been deleted)'
+      });
+    }
+
+    console.log(`📊 About to process:`, {
+      userId: userId,
+      fileId: fileId,
+      faceCount: filteredFaces.length,
+      firstFace: filteredFaces[0] ? {
+        faceId: filteredFaces[0].faceId,
+        matchedCount: filteredFaces[0].matchedFaceIds?.length,
+        hasGroupId: !!filteredFaces[0].groupId,
+        hasBoundingBox: !!filteredFaces[0].boundingBox,
+        allKeys: Object.keys(filteredFaces[0])
+      } : 'NO FACES'
+    });
+
+    // Process faces with transitivity (scoped to interview if provided)
+    const groups = await groupManager.processFaces(userId, fileId, filteredFaces, interviewId);
     
     const response: ProcessFacesResponse = {
       success: true,
-      processedCount: faces.length,
+      processedCount: filteredFaces.length,
       groups,
       message: `Successfully processed ${faces.length} faces into ${groups.length} groups`
     };
     
+    console.log('📤 SENDING RESPONSE:', {
+      success: response.success,
+      processedCount: response.processedCount,
+      groupCount: groups.length,
+      groupIds: groups.map(g => g.groupId)
+    });
+    console.log('════════════════════════════════════════\n');
+    
     res.json(response);
   } catch (error: any) {
-    console.error('Error processing faces:', error);
+    console.error('❌ ERROR IN /api/process-faces:', error);
+    console.error('  Error message:', error.message);
+    console.error('  Error stack:', error.stack);
+    console.error('════════════════════════════════════════\n');
+    
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to process faces'
@@ -56,18 +198,109 @@ router.post('/process-faces', async (req: Request, res: Response) => {
 
 /**
  * GET /api/files-with-faces/:userId
- * Get all files with faces for a user (for UI compatibility)
+ * Get all files with faces for a user
  */
 router.get('/files-with-faces/:userId', async (req: Request, res: Response) => {
   try {
     const { userId } = req.params;
+    console.log(`🔍 Getting files with faces for user: ${userId}`);
     
-    // For now, return the data from the WebsitePrototype API
-    // In production, this would query Firebase directly
-    const filesResponse = await fetch(`http://localhost:8083/api/files-with-faces/${userId}`);
-    const filesData = await filesResponse.json();
+    // Query Firebase for ALL files in user subcollection
+    // We'll check for faces in the document data
+    const filesSnapshot = await groupManager.db
+      .collection('users')
+      .doc(userId)
+      .collection('files')
+      .get();
     
-    res.json(filesData);
+    console.log(`📁 Found ${filesSnapshot.size} total files for user`);
+    
+    const files: any[] = [];
+    
+    for (const doc of filesSnapshot.docs) {
+      const fileData = doc.data();
+      const fileId = doc.id;
+      
+      // Check if this file has faces in any format
+      const hasFacesData = fileData.extractedFaces || fileData.faces || fileData.hasFaces;
+      
+      if (!hasFacesData) {
+        continue; // Skip files without face data
+      }
+      
+      console.log(`🎯 File ${fileId} has face data:`, {
+        hasExtractedFaces: !!fileData.extractedFaces,
+        hasFaces: !!fileData.faces,
+        hasFacesFlag: fileData.hasFaces
+      });
+      
+      // Check if faces are embedded in the file document itself
+      let faces = [];
+      
+      if (fileData.extractedFaces && Array.isArray(fileData.extractedFaces)) {
+        // Faces are embedded in the file document
+        faces = fileData.extractedFaces;
+        console.log(`  📦 Found ${faces.length} embedded faces in file document`);
+      } else {
+        // Try to get faces from a separate faces subcollection
+        const facesSnapshot = await groupManager.db
+          .collection('users')
+          .doc(userId)
+          .collection('faces')
+          .where('fileId', '==', fileId)
+          .get();
+        
+        faces = facesSnapshot.docs.map(faceDoc => ({
+          faceId: faceDoc.id,
+          ...faceDoc.data()
+        }));
+        
+        if (faces.length > 0) {
+          console.log(`  📂 Found ${faces.length} faces in separate collection`);
+        }
+      }
+
+      // ELEGANT SOLUTION (#237): extractedFaces IS the source of truth
+      // Deleted faces are already removed from extractedFaces, no separate filtering needed
+      // This is cleaner than tracking deletedFaces separately
+      console.log(`  ✅ Using ${faces.length} faces from extractedFaces (source of truth)`)
+
+      // Skip files with no remaining faces - don't create empty groups (#237)
+      if (faces.length === 0) {
+        console.log(`  ⏭️ Skipping file ${fileId} - no faces remaining after filtering`);
+        continue;
+      }
+
+      // Construct proper URL for the image
+      let imageUrl = fileData.url || fileData.imageUrl || fileData.downloadURL;
+      
+      // If URL is missing, construct Firebase Storage URL from fileId
+      if (!imageUrl || !imageUrl.startsWith('http')) {
+        // Firebase Storage path is typically: users/{userId}/files/{fileId}
+        const storagePath = `users/${userId}/files/${fileId}`;
+        // Use Firebase Storage public URL format
+        imageUrl = `https://firebasestorage.googleapis.com/v0/b/infitwin.firebasestorage.app/o/${encodeURIComponent(storagePath)}?alt=media`;
+        console.log(`  🔗 Constructed Firebase Storage URL for file ${fileId}`);
+      }
+      
+      // GH-82: Log extractedText presence for debugging OCR text flow
+      console.log(`  📝 File ${fileId} extractedText: ${fileData.extractedText ? `YES (${fileData.extractedText.length} chars)` : 'NOT PRESENT'}`);
+      console.log(`  📋 File ${fileId} fields: ${Object.keys(fileData).join(', ')}`);
+
+      files.push({
+        fileId,
+        url: imageUrl,
+        faces,
+        ...fileData
+      });
+    }
+
+    console.log(`✅ Found ${files.length} files with faces`);
+    
+    res.json({
+      success: true,
+      files
+    });
   } catch (error: any) {
     console.error('Error getting files with faces:', error);
     res.status(500).json({
@@ -134,6 +367,67 @@ router.get('/groups/:userId/:groupId', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/groups/:userId
+ * Create a new group with faces
+ */
+router.post('/groups/:userId', async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.params;
+    const { faces, groupName } = req.body;
+    
+    if (!faces || !Array.isArray(faces) || faces.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one face is required to create a group'
+      });
+    }
+    
+    console.log(`[WORKFLOW-BACKEND] Step 8a: Received create group request:`, {
+      userId,
+      facesCount: faces.length,
+      groupName,
+      faces: faces.map((f: any) => ({
+        faceId: f.faceId,
+        fileId: f.fileId,
+        hasBoundingBox: !!f.boundingBox
+      })),
+      fullPayload: req.body
+    });
+    
+    // Create the group using the group manager
+    const groupId = await groupManager.createGroupWithFaces(userId, faces, groupName);
+    
+    console.log(`[WORKFLOW-BACKEND] Step 8b: Group created in Firestore:`, {
+      groupId,
+      firestorePath: `users/${userId}/faceGroups/${groupId}`
+    });
+    
+    // Get the created group
+    const group = await groupManager.getGroup(userId, groupId);
+    
+    console.log(`[WORKFLOW-BACKEND] Step 8c: Retrieved group from Firestore:`, {
+      groupId: group?.groupId,
+      groupName: group?.groupName,
+      faceCount: group?.faceCount,
+      faceIds: group?.faceIds,
+      fullGroup: group
+    });
+    
+    res.json({
+      success: true,
+      group,
+      message: `Successfully created group with ${faces.length} faces`
+    });
+  } catch (error: any) {
+    console.error('Error creating group:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to create group'
+    });
+  }
+});
+
+/**
  * POST /api/groups/:userId/merge
  * Merge multiple groups
  */
@@ -164,6 +458,40 @@ router.post('/groups/:userId/merge', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to merge groups'
+    });
+  }
+});
+
+/**
+ * POST /api/groups/:groupId/faces
+ * Add a face to an existing group
+ */
+router.post('/groups/:groupId/faces', async (req: Request, res: Response) => {
+  try {
+    const { groupId } = req.params;
+    const { userId, faceId, fileId } = req.body;
+
+    if (!userId || !faceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: userId, faceId'
+      });
+    }
+
+    console.log(`Adding face ${faceId} to group ${groupId} for user ${userId}`);
+
+    // Add the face to the group
+    await groupManager.addFaceToExistingGroup(userId, groupId, faceId, fileId);
+
+    res.json({
+      success: true,
+      message: 'Face added to group successfully'
+    });
+  } catch (error: any) {
+    console.error('Error adding face to group:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to add face to group'
     });
   }
 });
@@ -201,6 +529,55 @@ router.delete('/groups/:groupId/faces/:faceId', async (req: Request, res: Respon
 });
 
 /**
+ * PUT /api/groups/:groupId/name
+ * Update the person name for a group
+ */
+router.put('/groups/:groupId/name', async (req: Request, res: Response) => {
+  try {
+    const { groupId } = req.params;
+    const { userId, personName } = req.body;
+    
+    if (!userId || !personName) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing userId or personName'
+      });
+    }
+    
+    console.log(`Updating person name for group ${groupId}: ${personName}`);
+    
+    // Update the group document with the person name
+    const groupRef = groupManager.db
+      .collection('users')
+      .doc(userId)
+      .collection('faceGroups')
+      .doc(groupId);
+    
+    await groupRef.update({
+      personName: personName,
+      groupName: personName, // Also store as groupName for compatibility
+      updatedAt: getAdmin().firestore.FieldValue.serverTimestamp()
+    });
+    
+    // Get the updated group
+    const updatedDoc = await groupRef.get();
+    const updatedGroup = { groupId: updatedDoc.id, ...updatedDoc.data() };
+    
+    res.json({
+      success: true,
+      message: 'Person name updated successfully',
+      group: updatedGroup
+    });
+  } catch (error: any) {
+    console.error('Error updating person name:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to update person name'
+    });
+  }
+});
+
+/**
  * DELETE /api/groups/:groupId
  * Delete a specific group
  */
@@ -228,6 +605,40 @@ router.delete('/groups/:groupId', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to delete group'
+    });
+  }
+});
+
+/**
+ * DELETE /api/cleanup-faces-by-file
+ * Cascade cleanup when a file is deleted: removes face documents,
+ * updates/deletes affected groups, and removes from AWS Rekognition.
+ */
+router.delete('/cleanup-faces-by-file', async (req: Request, res: Response) => {
+  try {
+    const { userId, fileId } = req.body;
+
+    if (!userId || !fileId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields: userId, fileId'
+      });
+    }
+
+    console.log(`DELETE /cleanup-faces-by-file: userId=${userId}, fileId=${fileId}`);
+
+    const stats = await groupManager.cleanupFacesByFile(userId, fileId);
+
+    res.status(200).json({
+      success: true,
+      message: 'Face cleanup completed',
+      stats
+    });
+  } catch (error: any) {
+    console.error('Face cleanup error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Face cleanup failed'
     });
   }
 });

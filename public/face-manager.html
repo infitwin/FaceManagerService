@@ -479,7 +479,26 @@
         <div class="groups-panel">
             <div class="panel-header">
                 <h2 class="panel-title">Groups</h2>
-                <span class="face-count" id="groupCount">0</span>
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="face-count" id="groupCount">0</span>
+                    <button class="next-step-btn" id="nextStepBtn" onclick="proceedToNextStep()" style="
+                        background: #10b981 !important;
+                        color: white !important;
+                        border: none !important;
+                        padding: 10px 20px !important;
+                        border-radius: 6px !important;
+                        font-size: 16px !important;
+                        font-weight: 600 !important;
+                        cursor: pointer !important;
+                        transition: all 0.2s !important;
+                        display: inline-block !important;
+                        visibility: visible !important;
+                        opacity: 1 !important;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
+                    " onmouseover="this.style.background='#059669 !important'" onmouseout="this.style.background='#10b981 !important'">
+                        🚀 Next Step →
+                    </button>
+                </div>
             </div>
             <div class="groups-list" id="groupsList">
                 <div class="loading">
@@ -506,6 +525,32 @@
 
     <!-- Scripts -->
     <script src="get-firebase-urls.js"></script>
-    <script src="face-manager.js"></script>
+    <script src="face-manager-simple.js"></script>
+    <script>
+        // Ensure the button function is available even if main script fails
+        if (typeof proceedToNextStep === 'undefined') {
+            window.proceedToNextStep = function() {
+                const choice = confirm(
+                    'What would you like to do next?\n\n' +
+                    'OK = View Face Summarization Info\n' +
+                    'Cancel = Select Leader Faces\n\n' +
+                    'Note: Face Summarization runs automatically when interviews complete.'
+                );
+                
+                if (choice) {
+                    alert('Face Summarization Info:\n\n' +
+                          '• Your face groups are ready for AI analysis\n' +
+                          '• When an interview completes, faces are automatically analyzed\n' + 
+                          '• AI identifies people and relationships\n' +
+                          '• Results are added to your knowledge graph');
+                } else {
+                    alert('Leader Face Selection:\n\n' +
+                          '• Choose the best representative face for each group\n' +
+                          '• This helps identify people more accurately\n' +
+                          '• You can update leaders anytime');
+                }
+            };
+        }
+    </script>
 </body>
 </html>

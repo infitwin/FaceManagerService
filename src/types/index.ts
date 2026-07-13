@@ -14,6 +14,8 @@ export interface Face {
   confidence?: number;
   boundingBox?: any;
   similarity?: number;
+  groupId?: string;  // GroupId from AWS Rekognition
+  emotions?: any[];
 }
 
 /**
@@ -23,6 +25,8 @@ export interface ProcessFacesRequest {
   userId: string;
   fileId: string;
   faces: Face[];
+  interviewId?: string;  // Interview scope for group isolation
+  batchId?: string;      // Batch ID for tracking
 }
 
 /**
@@ -40,9 +44,17 @@ export interface ProcessFacesResponse {
  */
 export interface FaceGroup {
   groupId: string;
+  groupName?: string;
+  interviewId?: string;  // Interview this group belongs to (for isolation)
   faceIds: string[];
+  leaderFaceId: string;
+  leaderFaceData: {
+    fileId: string;
+    boundingBox: any;
+  };
   fileIds: string[];
   faceCount: number;
+  status: string;
   createdAt: Timestamp | Date;
   updatedAt: Timestamp | Date;
   mergedFrom?: string[];

@@ -6,70 +6,344 @@
 import { getDb, getAdmin } from '../config/firebase';
 import { Face, FaceGroup, FileFaceUpdate } from '../types';
 import { FieldValue } from 'firebase-admin/firestore';
+import { RekognitionClient, SearchFacesCommand, DeleteFacesCommand } from '@aws-sdk/client-rekognition';
 
 export class GroupManager {
-  private get db() {
+  private rekognition: RekognitionClient | null = null;
+
+  constructor() {
+    // AWS client will be initialized on first use
+  }
+
+  private getAWSClient(): RekognitionClient {
+    if (!this.rekognition) {
+      // Initialize AWS Rekognition client on first use (after env vars are loaded)
+      console.log('🔧 Initializing AWS Rekognition client (SDK v3)...');
+      console.log('  AWS_REGION:', process.env.AWS_REGION || 'us-east-1');
+      console.log('  AWS-ACCESS-KEY-ID:', process.env['AWS-ACCESS-KEY-ID'] ? 'Set' : 'NOT SET');
+      console.log('  AWS-SECRET-ACCESS-KEY:', process.env['AWS-SECRET-ACCESS-KEY'] ? 'Set' : 'NOT SET');
+      
+      this.rekognition = new RekognitionClient({
+        region: process.env.AWS_REGION || 'us-east-1',
+        credentials: {
+          accessKeyId: process.env['AWS-ACCESS-KEY-ID'] || '',  // Using hyphenated name from Secret Manager
+          secretAccessKey: process.env['AWS-SECRET-ACCESS-KEY'] || ''  // Using hyphenated name from Secret Manager
+        }
+      });
+    }
+    return this.rekognition;
+  }
+
+  get db() {
     return getDb();
+  }
+
+  /**
+   * Verify that an image exists in Firebase Storage (#237)
+   * Uses Firebase Admin SDK to directly check file existence - more reliable than HTTP
+   * Returns true if file exists in storage, false otherwise
+   */
+  private async isImageAccessible(imageUrl: string): Promise<boolean> {
+    try {
+      // Parse Firebase Storage URL to extract bucket and path
+      // Format: https://firebasestorage.googleapis.com/v0/b/{bucket}/o/{encodedPath}?alt=media&token=...
+      const urlMatch = imageUrl.match(/firebasestorage\.googleapis\.com\/v0\/b\/([^\/]+)\/o\/([^?]+)/);
+
+      if (!urlMatch) {
+        console.log(`    ⚠️ Not a Firebase Storage URL, assuming accessible: ${imageUrl.substring(0, 60)}...`);
+        return true; // Non-Firebase URLs - assume accessible
+      }
+
+      const bucket = urlMatch[1];
+      const encodedPath = urlMatch[2];
+      const filePath = decodeURIComponent(encodedPath);
+
+      console.log(`    🔍 Checking Firebase Storage: bucket=${bucket}, path=${filePath.substring(0, 50)}...`);
+
+      const admin = getAdmin();
+      const storage = admin.storage();
+      const file = storage.bucket(bucket).file(filePath);
+
+      const [exists] = await file.exists();
+
+      console.log(`    ${exists ? '✅' : '❌'} Firebase Storage file ${exists ? 'EXISTS' : 'NOT FOUND'}: ${filePath.substring(0, 50)}...`);
+      return exists;
+    } catch (err: any) {
+      console.log(`    ❌ Firebase Storage check error: ${err.message}`);
+      // On error, be conservative - don't create groups for files we can't verify
+      return false;
+    }
+  }
+
+  /**
+   * Search for matching faces in AWS Face Collection
+   * This is what the ArtifactProcessor should NOT be doing
+   */
+  private async searchForMatches(userId: string, faceId: string): Promise<string[]> {
+    try {
+      console.log(`🔍 Searching for matches for face ${faceId} in collection face_coll_${userId}`);
+      
+      const rekognition = this.getAWSClient();
+      const command = new SearchFacesCommand({
+        CollectionId: `face_coll_${userId}`,
+        FaceId: faceId,
+        // GH-744: 85% chained unrelated crowd faces into mega-clusters
+        // (field-verified). 97% is identity-grade; transitivity amplifies
+        // any looseness, so err strict — a missed match splits a person
+        // (recoverable), a false match corrupts families (it isn't).
+        FaceMatchThreshold: 97.0,
+        MaxFaces: 20
+      });
+      
+      const response = await rekognition.send(command);
+      
+      // Extract matched face IDs
+      const matchedFaceIds = response.FaceMatches
+        ?.map(match => match.Face?.FaceId)
+        .filter((id): id is string => id !== undefined && id !== faceId) || [];
+      
+      console.log(`✅ Face ${faceId} matches ${matchedFaceIds.length} other faces:`, matchedFaceIds);
+      return matchedFaceIds;
+    } catch (error) {
+      console.error(`❌ Error searching for face matches: ${error}`);
+      return [];
+    }
   }
 
   /**
    * Process new faces with transitivity-aware grouping
    * This is the core algorithm that ensures A→B→C all get the same GroupId
    */
-  async processFaces(userId: string, fileId: string, faces: Face[]): Promise<FaceGroup[]> {
-    console.log(`\n📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
+  async processFaces(userId: string, fileId: string, faces: Face[], interviewId?: string): Promise<FaceGroup[]> {
+    console.log('\n🎯 processFaces() CALLED');
+    console.log(`📊 Processing ${faces.length} faces for user ${userId}, file ${fileId}`);
+    console.log(`🔄 Face matching v3.2 - Global face groups across all interviews`);
+    console.log(`📌 Interview context: ${interviewId || 'NONE'} (groups are global, used for audit trail)`);
+    console.log(`  ✅ Face groups are shared across all interviews for continuity`);
+
+    // CRITICAL: Verify source file exists before processing faces (#237)
+    // AWS may have faceIds for files that were deleted/renamed - don't create groups for them
+    const fileDoc = await this.db.collection('users').doc(userId)
+                                 .collection('files').doc(fileId).get();
+
+    if (!fileDoc.exists) {
+      console.log(`  ⏭️ Skipping all faces - source file ${fileId} does not exist`);
+      return [];
+    }
+
+    const fileData = fileDoc.data();
+    const imageUrl = fileData?.url || fileData?.imageUrl || fileData?.downloadURL;
+
+    if (!imageUrl) {
+      console.log(`  ⏭️ Skipping all faces - source file ${fileId} has no image URL`);
+      return [];
+    }
+
+    console.log(`  📋 Source file ${fileId} has image URL, verifying accessibility...`);
+
+    // CRITICAL: Verify image is actually accessible (#237)
+    // This catches deleted images, expired URLs, or permission issues
+    // The UI only displays faces whose images successfully load, so we must match that
+    const isAccessible = await this.isImageAccessible(imageUrl);
+    if (!isAccessible) {
+      console.log(`  ⏭️ Skipping all faces - image at ${imageUrl.substring(0, 60)}... is NOT accessible`);
+      return [];
+    }
+
+    console.log(`  ✅ Source file verified: ${fileId} image is accessible`);
+
+    // Log exact structure of received faces
+    console.log('📦 Received faces array:');
+    faces.forEach((face, index) => {
+      console.log(`  Face ${index}:`, {
+        faceId: face.faceId || 'MISSING',
+        matchedFaceIds: face.matchedFaceIds || 'MISSING',
+        matchedCount: face.matchedFaceIds?.length || 0,
+        confidence: face.confidence || 'MISSING',
+        boundingBox: face.boundingBox ? 'present' : 'MISSING',
+        groupId: face.groupId || 'MISSING',
+        allKeys: Object.keys(face)
+      });
+    });
     
     const updatedGroups: FaceGroup[] = [];
     const fileUpdates: FileFaceUpdate[] = [];
+    
+    // IMPORTANT: If multiple faces from same file and no matches provided,
+    // assume they are DIFFERENT people (common case: group photo)
+    // Each face from the same file should get its own group unless explicitly matched
+    const processedFaceToGroup: Map<string, string> = new Map();
 
     for (const face of faces) {
-      console.log(`\n🔍 Processing face ${face.faceId} with ${face.matchedFaceIds.length} matches`);
+      console.log(`\n🔍 Processing face ${face.faceId}`);
+
+      // Validate face has required image data - skip faces without valid bounding box (#237)
+      // Without a valid bounding box, we can't render the face thumbnail, so creating
+      // a group for it would result in an empty group (displays "1 face" but no image)
+      const boundingBox = face.boundingBox || (face as any).BoundingBox;
+      if (!boundingBox ||
+          boundingBox.Left === undefined ||
+          boundingBox.Top === undefined ||
+          boundingBox.Width === undefined ||
+          boundingBox.Height === undefined) {
+        console.log(`  ⏭️ Skipping face ${face.faceId} - missing or invalid bounding box (no image data)`);
+        console.log(`    BoundingBox received:`, JSON.stringify(boundingBox));
+        continue;
+      }
+
+      console.log(`  📊 Input data:`, {
+        faceId: face.faceId,
+        matchedFaceIds: face.matchedFaceIds,
+        matchedCount: face.matchedFaceIds?.length || 0,
+        confidence: face.confidence,
+        hasGroupId: !!face.groupId,
+        groupId: face.groupId,
+        boundingBox: { L: boundingBox.Left?.toFixed(3), T: boundingBox.Top?.toFixed(3), W: boundingBox.Width?.toFixed(3), H: boundingBox.Height?.toFixed(3) }
+      });
       
-      if (face.matchedFaceIds.length > 0) {
-        // Face has matches - find existing groups
-        const existingGroups = await this.findGroupsContainingFaces(userId, face.matchedFaceIds);
-        console.log(`  Found ${existingGroups.length} existing groups containing matched faces`);
+      // Log AWS GroupId if present
+      if (face.groupId) {
+        console.log(`  🏷️ AWS GroupId: ${face.groupId}`);
+      }
+      
+      // Log matched faces details
+      if (face.matchedFaceIds && face.matchedFaceIds.length > 0) {
+        console.log(`  🔗 Matched to ${face.matchedFaceIds.length} faces:`);
+        face.matchedFaceIds.forEach((matchId, idx) => {
+          console.log(`     ${idx + 1}. ${matchId}`);
+        });
+      }
+      
+      // If no matches provided, search AWS Face Collection for matches
+      let matchedFaceIds = face.matchedFaceIds;
+      if (!matchedFaceIds || matchedFaceIds.length === 0) {
+        console.log(`  ⚡ No matches provided - calling AWS SearchFaces API...`);
+        matchedFaceIds = await this.searchForMatches(userId, face.faceId);
+        console.log(`  ✅ AWS found ${matchedFaceIds.length} matching faces`);
+      } else {
+        console.log(`  📦 Using ${matchedFaceIds.length} pre-provided matches: ${matchedFaceIds.join(', ')}`);
+      }
+      
+      if (matchedFaceIds.length > 0) {
+        // Face has matches - find existing groups (global search across all interviews)
+        // CRITICAL: Search for groups containing EITHER the current face OR any matched faces
+        // This ensures we find existing groups when reprocessing the same face
+        const searchFaceIds = [face.faceId, ...matchedFaceIds];
+        console.log(`  🔍 Searching for groups containing ${searchFaceIds.length} face IDs (current + matches)...`);
+        const existingGroups = await this.findGroupsContainingFaces(userId, searchFaceIds, interviewId);
+        console.log(`  📦 Found ${existingGroups.length} existing groups containing matched faces`);
+        if (existingGroups.length > 0) {
+          console.log(`  📋 Existing groups:`, existingGroups.map(g => ({
+            groupId: g.groupId,
+            faceCount: g.faceIds?.length || 0,
+            containsFaces: g.faceIds?.slice(0, 3) // Show first 3 faces
+          })));
+        }
         
         if (existingGroups.length === 0) {
-          // No existing groups - create new group with face and all matches
-          console.log(`  Creating new group for face and its ${face.matchedFaceIds.length} matches`);
-          const groupId = await this.createGroup(userId, [face.faceId, ...face.matchedFaceIds], fileId);
+          // No existing groups - create new group with ONLY this face
+          // The matched faces will be grouped naturally when they are processed
+          console.log(`  Creating new group for face (matches will be grouped when processed)`);
+          const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox, interviewId);
+          
+          // Create face document for this face
+          await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
+          
+          // Don't add matched faces to the group - they'll be added when they're actually processed
+          // This prevents creating groups with phantom faces that haven't been processed yet
+          
           const newGroup = await this.getGroup(userId, groupId);
           if (newGroup) updatedGroups.push(newGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId });
           
         } else if (existingGroups.length === 1) {
-          // Single group found - add face to it
+          // Single group found - add face to it if not already present
           const group = existingGroups[0];
-          console.log(`  Adding face to existing group ${group.groupId}`);
-          await this.addFaceToGroup(userId, group.groupId, face.faceId, fileId);
+
+          // Check if face is already in this group to prevent duplicates
+          if (group.faceIds && group.faceIds.includes(face.faceId)) {
+            console.log(`  ⏭️  Face ${face.faceId} already in group ${group.groupId} - skipping add operation`);
+          } else {
+            console.log(`  Adding face to existing group ${group.groupId}`);
+            await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+          }
+
           const updatedGroup = await this.getGroup(userId, group.groupId);
           if (updatedGroup) updatedGroups.push(updatedGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: group.groupId });
           
         } else {
-          // Multiple groups found - MERGE them (key to transitivity!)
-          console.log(`  ⚡ Merging ${existingGroups.length} groups - faces belong to same person!`);
-          const primaryGroupId = existingGroups[0].groupId;
-          
-          // Merge all secondary groups into primary
-          for (let i = 1; i < existingGroups.length; i++) {
-            await this.mergeGroups(userId, primaryGroupId, existingGroups[i].groupId);
+          // Multiple groups found. GH-744: a single bridging face was enough
+          // to merge whole groups — one false match corrupted entire families
+          // (field-verified: unrelated crowd faces chained into mega-clusters).
+          // Now a group only merges when >=2 INDEPENDENT matched faces support
+          // it; single-edge groups are left intact and the new face joins the
+          // group with the strongest support.
+          const support = new Map<string, number>();
+          for (const g of existingGroups) {
+            const n = (g.faceIds || []).filter((fid: string) =>
+              matchedFaceIds.includes(fid)).length;
+            support.set(g.groupId, n);
           }
-          
-          // Add new face to merged group
-          await this.addFaceToGroup(userId, primaryGroupId, face.faceId, fileId);
+          const ranked = [...existingGroups].sort((a, b) =>
+            (support.get(b.groupId) || 0) - (support.get(a.groupId) || 0));
+          const primaryGroupId = ranked[0].groupId;
+          const mergeable = ranked.slice(1).filter(
+            (g) => (support.get(g.groupId) || 0) >= 2);
+          const skipped = ranked.slice(1).length - mergeable.length;
+          console.log(`  ⚡ Group merge: primary ${primaryGroupId}, merging ${mergeable.length}, keeping ${skipped} single-edge group(s) separate (GH-744)`);
+
+          for (const g of mergeable) {
+            await this.mergeGroups(userId, primaryGroupId, g.groupId);
+          }
+
+          // Get updated primary group after merge to check if face already present
           const mergedGroup = await this.getGroup(userId, primaryGroupId);
-          if (mergedGroup) updatedGroups.push(mergedGroup);
+
+          // Add new face to merged group only if not already present
+          if (mergedGroup && mergedGroup.faceIds && mergedGroup.faceIds.includes(face.faceId)) {
+            console.log(`  ⏭️  Face ${face.faceId} already in merged group ${primaryGroupId} - skipping add operation`);
+          } else {
+            console.log(`  Adding face to merged group ${primaryGroupId}`);
+            await this.addFaceToExistingGroup(userId, primaryGroupId, face.faceId, fileId, face.boundingBox, face.confidence);
+          }
+
+          const updatedMergedGroup = await this.getGroup(userId, primaryGroupId);
+          if (updatedMergedGroup) updatedGroups.push(updatedMergedGroup);
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: primaryGroupId });
         }
       } else {
-        // No matches - create single-face group
-        console.log(`  No matches - creating new single-face group`);
-        const groupId = await this.createGroup(userId, [face.faceId], fileId);
-        const newGroup = await this.getGroup(userId, groupId);
-        if (newGroup) updatedGroups.push(newGroup);
-        fileUpdates.push({ fileId, faceId: face.faceId, groupId });
+        // No matches - but check if this face is already in an existing group
+        console.log(`  No matches found - checking if face is already in a group...`);
+        const existingGroups = await this.findGroupsContainingFaces(userId, [face.faceId], interviewId);
+
+        if (existingGroups.length > 0) {
+          // Face is already in a group - check if already added to prevent duplicates
+          const group = existingGroups[0];
+
+          // Check if face is already in this group
+          if (group.faceIds && group.faceIds.includes(face.faceId)) {
+            console.log(`  ⏭️  Face ${face.faceId} already in group ${group.groupId} - skipping add operation`);
+          } else {
+            console.log(`  Face already in group ${group.groupId} - updating it`);
+            await this.addFaceToExistingGroup(userId, group.groupId, face.faceId, fileId, face.boundingBox, face.confidence);
+          }
+
+          const updatedGroup = await this.getGroup(userId, group.groupId);
+          if (updatedGroup) updatedGroups.push(updatedGroup);
+          fileUpdates.push({ fileId, faceId: face.faceId, groupId: group.groupId });
+        } else {
+          // Face is not in any group - create new single-face group
+          console.log(`  Face not in any group - creating new single-face group`);
+          const groupId = await this.createGroup(userId, [face.faceId], fileId, face.boundingBox, interviewId);
+
+          // Create face document for this face
+          await this.createFaceDocument(userId, face.faceId, groupId, fileId, face.boundingBox, face.confidence);
+
+          const newGroup = await this.getGroup(userId, groupId);
+          if (newGroup) updatedGroups.push(newGroup);
+          fileUpdates.push({ fileId, faceId: face.faceId, groupId });
+        }
       }
     }
 
@@ -79,77 +353,255 @@ export class GroupManager {
     }
 
     console.log(`\n✅ Processed ${faces.length} faces into ${updatedGroups.length} groups`);
+    
+    // Log summary of groups created
+    console.log(`\n📊 GROUPING SUMMARY:`);
+    console.log(`  Total faces processed: ${faces.length}`);
+    console.log(`  Groups affected: ${updatedGroups.length}`);
+    
+    // Show unique groups and their sizes
+    const uniqueGroups = new Map();
+    updatedGroups.forEach(group => {
+      if (!uniqueGroups.has(group.groupId)) {
+        uniqueGroups.set(group.groupId, {
+          faceCount: group.faceIds?.length || 0,
+          faceIds: group.faceIds || []
+        });
+      }
+    });
+    
+    console.log(`  Unique groups: ${uniqueGroups.size}`);
+    uniqueGroups.forEach((data, groupId) => {
+      console.log(`    - Group ${groupId.substring(0, 8)}... has ${data.faceCount} faces`);
+    });
+    
     return updatedGroups;
   }
 
   /**
-   * Find all groups that contain any of the specified face IDs
+   * Create face document in the faces collection
+   * Per Data Standard 1.4.6 - dual-collection architecture
    */
-  private async findGroupsContainingFaces(userId: string, faceIds: string[]): Promise<FaceGroup[]> {
-    const groupsRef = this.db.collection('users').doc(userId).collection('faceGroups');
-    const query = groupsRef.where('faceIds', 'array-contains-any', faceIds);
-    const snapshot = await query.get();
+  private async createFaceDocument(
+    userId: string, 
+    faceId: string, 
+    groupId: string, 
+    fileId: string,
+    boundingBox?: any,
+    confidence?: number
+  ): Promise<void> {
+    try {
+      console.log(`    📝 Attempting to create face document for ${faceId}...`);
+      
+      const faceRef = this.db.collection('users').doc(userId)
+                            .collection('faces').doc(faceId);
+      
+      const faceData = {
+        faceId,
+        groupId,
+        fileId,
+        userId,
+        boundingBox: boundingBox || {},
+        confidence: confidence || 99.99,
+        emotions: [],
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp()
+      };
+      
+      await faceRef.set(faceData);
+      console.log(`    ✅ Created face document: /users/${userId}/faces/${faceId} -> group ${groupId}`);
+    } catch (error: any) {
+      console.error(`    ❌ FAILED to create face document for ${faceId}:`, error);
+      console.error(`      Error message:`, error.message);
+      console.error(`      Error code:`, error.code);
+      // Don't throw - continue processing other faces
+    }
+  }
+
+  /**
+   * Find similar faces in existing groups
+   * This helps match new faces to existing groups even without explicit matchedFaceIds
+   */
+  private async findSimilarFaces(userId: string, faceId: string): Promise<string[]> {
+    console.log(`    Searching for similar faces to ${faceId} in existing groups...`);
     
+    // First check if this face is already in a group
+    const existingGroupsQuery = this.db.collection('users').doc(userId)
+                                      .collection('faceGroups')
+                                      .where('faceIds', 'array-contains', faceId);
+    const existingSnapshot = await existingGroupsQuery.get();
+    
+    if (!existingSnapshot.empty) {
+      console.log(`      Face ${faceId} is already in a group, skipping similarity search`);
+      return [];
+    }
+    
+    // Get the face document to check for embedded match data
+    const faceDoc = await this.db.collection('users').doc(userId)
+                                 .collection('faces').doc(faceId).get();
+    
+    if (!faceDoc.exists) {
+      console.log(`      Face document ${faceId} not found in faces collection`);
+      return [];
+    }
+    
+    const faceData = faceDoc.data();
+    const similarFaceIds: string[] = [];
+    
+    // Check if face has AWS Rekognition match data
+    if (faceData?.matches && Array.isArray(faceData.matches)) {
+      console.log(`      Face has ${faceData.matches.length} AWS Rekognition matches`);
+      
+      // Use high-confidence matches (>85% similarity)
+      for (const match of faceData.matches) {
+        if (match.similarity >= 85 && match.faceId && match.faceId !== faceId) {
+          similarFaceIds.push(match.faceId);
+          console.log(`      Found match: ${match.faceId} (${match.similarity}% similarity)`);
+        }
+      }
+    }
+    
+    // Fallback: Check if there's a matchedFaces field
+    if (faceData?.matchedFaces && Array.isArray(faceData.matchedFaces)) {
+      console.log(`      Face has ${faceData.matchedFaces.length} matched faces`);
+      for (const matchedFaceId of faceData.matchedFaces) {
+        if (matchedFaceId !== faceId && !similarFaceIds.includes(matchedFaceId)) {
+          similarFaceIds.push(matchedFaceId);
+        }
+      }
+    }
+    
+    // Additional check: Look for faces with the same externalId (if faces were imported from same source)
+    if (faceData?.externalId) {
+      const externalIdQuery = this.db.collection('users').doc(userId)
+                                     .collection('faces')
+                                     .where('externalId', '==', faceData.externalId)
+                                     .limit(10);
+      const externalIdSnapshot = await externalIdQuery.get();
+      
+      externalIdSnapshot.forEach((doc: any) => {
+        if (doc.id !== faceId && !similarFaceIds.includes(doc.id)) {
+          similarFaceIds.push(doc.id);
+          console.log(`      Found face with same externalId: ${doc.id}`);
+        }
+      });
+    }
+    
+    console.log(`    Found ${similarFaceIds.length} similar faces total`);
+    return similarFaceIds;
+  }
+
+  /**
+   * Find all groups that contain any of the specified face IDs
+   * v3.0: GLOBAL MATCHING - Face groups are now shared across all interviews
+   *
+   * Face groups are preprocessing infrastructure (face recognition/identification),
+   * not interview content. Users identify each person once, and that identification
+   * persists across all processing sessions. Interview graphs (Neo4j Person nodes)
+   * remain separate per interview.
+   *
+   * @param userId - User ID
+   * @param faceIds - Array of face IDs to search for
+   * @param interviewId - Optional, kept for audit trail (shows which interview created the group)
+   * @returns Array of face groups containing any of the specified faces
+   */
+  private async findGroupsContainingFaces(userId: string, faceIds: string[], interviewId?: string): Promise<FaceGroup[]> {
+    console.log(`    🔍 Looking up groups for ${faceIds.length} face IDs (GLOBAL matching)`);
+
+    if (faceIds.length === 0) {
+      console.log(`    ⚠️  No face IDs provided`);
+      return [];
+    }
+
     const groups: FaceGroup[] = [];
-    snapshot.forEach((doc: any) => {
-      groups.push({ groupId: doc.id, ...doc.data() } as FaceGroup);
-    });
-    
+    const foundGroupIds = new Set<string>();
+
+    // Query groups directly using array-contains-any
+    // Firestore array-contains-any has a limit of 10 items, so batch if needed
+    const batchSize = 10;
+    for (let i = 0; i < faceIds.length; i += batchSize) {
+      const batch = faceIds.slice(i, i + batchSize);
+      console.log(`    📦 Querying groups batch ${Math.floor(i/batchSize) + 1}: ${batch.length} face IDs`);
+
+      try {
+        const groupsQuery = await this.db.collection('users').doc(userId)
+          .collection('faceGroups')
+          .where('faceIds', 'array-contains-any', batch)
+          .get();
+
+        console.log(`    ✓ Found ${groupsQuery.size} groups in batch ${Math.floor(i/batchSize) + 1}`);
+
+        groupsQuery.forEach((doc) => {
+          const group = doc.data() as FaceGroup;
+
+          // Only add if we haven't seen this group yet
+          if (!foundGroupIds.has(group.groupId)) {
+            foundGroupIds.add(group.groupId);
+            groups.push(group);
+            console.log(`      ✓ Group ${group.groupId} contains ${group.faceIds?.length || 0} faces (name: ${group.groupName || '(unnamed)'}, created in: ${group.interviewId || 'global'})`);
+          }
+        });
+      } catch (error) {
+        console.error(`      ❌ Error querying groups for batch:`, error);
+      }
+    }
+
+    console.log(`    📊 Found ${groups.length} unique groups containing matched faces`);
+
     return groups;
   }
 
   /**
    * Create a new face group
+   * v3.2: Groups are global across interviews - interviewId stored for audit trail only
+   * v2.6: Simple validation - don't create group if no valid image data (#237)
    */
-  private async createGroup(userId: string, faceIds: string[], fileId: string): Promise<string> {
+  private async createGroup(userId: string, faceIds: string[], fileId: string, leaderBoundingBox?: any, interviewId?: string): Promise<string> {
+    // Don't create empty groups
+    if (!faceIds || faceIds.length === 0) {
+      console.log(`    ⏭️ Skipping group - no faces`);
+      return '';
+    }
+
+    // Don't create group without a file to display (#237)
+    if (!fileId) {
+      console.log(`    ⏭️ Skipping group - no fileId (can't display image)`);
+      return '';
+    }
+
+    // Don't create group without valid bounding box (#237)
+    // Need all 4 coordinates to crop the face from the image
+    const bb = leaderBoundingBox;
+    if (!bb || bb.Left === undefined || bb.Top === undefined || bb.Width === undefined || bb.Height === undefined) {
+      console.log(`    ⏭️ Skipping group - invalid bounding box (can't crop face)`);
+      return '';
+    }
+
     const groupId = this.generateGroupId();
     const groupRef = this.db.collection('users').doc(userId)
                            .collection('faceGroups').doc(groupId);
-    
+
     const groupData: Partial<FaceGroup> = {
       groupId,
+      interviewId,  // Audit trail: which interview created this group
       faceIds,
+      leaderFaceId: faceIds[0],  // First face is the leader
+      leaderFaceData: {
+        fileId: fileId,
+        boundingBox: leaderBoundingBox || {}
+      },
       fileIds: [fileId],
       faceCount: faceIds.length,
+      status: 'unreviewed',
       createdAt: FieldValue.serverTimestamp() as any,
       updatedAt: FieldValue.serverTimestamp() as any
     };
-    
+
     await groupRef.set(groupData);
-    console.log(`    Created group ${groupId} with ${faceIds.length} faces`);
+    console.log(`    Created group ${groupId} with ${faceIds.length} faces, leader: ${faceIds[0]}, created in interview: ${interviewId || 'N/A'}`);
     return groupId;
   }
 
-  /**
-   * Add a face to an existing group
-   */
-  private async addFaceToGroup(userId: string, groupId: string, faceId: string, fileId: string): Promise<void> {
-    const groupRef = this.db.collection('users').doc(userId)
-                           .collection('faceGroups').doc(groupId);
-    
-    // First get the current group to check if face already exists
-    const groupDoc = await groupRef.get();
-    if (groupDoc.exists) {
-      const groupData = groupDoc.data() as FaceGroup;
-      const currentFaceIds = groupData.faceIds || [];
-      
-      // Only update if face is not already in the group
-      if (!currentFaceIds.includes(faceId)) {
-        await groupRef.update({
-          faceIds: FieldValue.arrayUnion(faceId),
-          fileIds: FieldValue.arrayUnion(fileId),
-          faceCount: currentFaceIds.length + 1, // Set exact count
-          updatedAt: FieldValue.serverTimestamp()
-        });
-      } else {
-        // Face already in group, just add the fileId if new
-        await groupRef.update({
-          fileIds: FieldValue.arrayUnion(fileId),
-          updatedAt: FieldValue.serverTimestamp()
-        });
-      }
-    }
-  }
 
   /**
    * Merge two groups (for transitivity)
@@ -179,6 +631,17 @@ export class GroupManager {
     // Merge face IDs and calculate unique count
     const mergedFaceIds = [...new Set([...(primaryData.faceIds || []), ...(secondaryData.faceIds || [])])];
     const mergedFileIds = [...new Set([...(primaryData.fileIds || []), ...(secondaryData.fileIds || [])])];
+    
+    // Update all face documents from secondary group to point to primary group
+    console.log(`    Updating ${secondaryData.faceIds?.length || 0} face documents to point to primary group`);
+    const facesCollection = this.db.collection('users').doc(userId).collection('faces');
+    const updatePromises = (secondaryData.faceIds || []).map(faceId => 
+      facesCollection.doc(faceId).update({ 
+        groupId: primaryGroupId,
+        updatedAt: FieldValue.serverTimestamp()
+      }).catch(err => console.warn(`      Failed to update face ${faceId}:`, err))
+    );
+    await Promise.all(updatePromises);
     
     // Update primary group with merged data
     await primaryRef.update({
@@ -212,12 +675,16 @@ export class GroupManager {
   async getAllGroups(userId: string): Promise<FaceGroup[]> {
     const groupsRef = this.db.collection('users').doc(userId).collection('faceGroups');
     const snapshot = await groupsRef.orderBy('updatedAt', 'desc').get();
-    
+
     const groups: FaceGroup[] = [];
+
     snapshot.forEach((doc: any) => {
-      groups.push({ groupId: doc.id, ...doc.data() } as FaceGroup);
+      const data = doc.data();
+      // Include ALL groups, even empty ones (they're valid for drag-drop)
+      // Don't auto-delete empty groups - user may want to add faces to them
+      groups.push({ groupId: doc.id, ...data } as FaceGroup);
     });
-    
+
     return groups;
   }
 
@@ -267,20 +734,48 @@ export class GroupManager {
       
       const groupData = groupDoc.data() as FaceGroup;
       const updatedFaceIds = (groupData.faceIds || []).filter(id => id !== faceId);
-      
-      // If no faces left, delete the group
-      if (updatedFaceIds.length === 0) {
-        await groupRef.delete();
-        console.log(`🗑️ Deleted empty group ${groupId}`);
-        return true;
-      }
-      
-      // Update the group with the remaining faces
-      await groupRef.update({
+
+      // Delete the face document from faces collection
+      const faceRef = this.db.collection('users').doc(userId)
+                            .collection('faces').doc(faceId);
+      await faceRef.delete();
+      console.log(`    🗑️ Deleted face document: /users/${userId}/faces/${faceId}`);
+
+      // Don't auto-delete empty groups - let user manually delete if desired
+      // Empty groups are valid and can have faces added back via drag-drop
+      console.log(`ℹ️ Group ${groupId} now has ${updatedFaceIds.length} faces (empty groups are preserved)`);
+
+      // Prepare update object
+      const updateData: any = {
         faceIds: updatedFaceIds,
         faceCount: updatedFaceIds.length,
         updatedAt: FieldValue.serverTimestamp()
-      });
+      };
+      
+      // Update leader if removed face was the leader
+      if (groupData.leaderFaceId === faceId && updatedFaceIds.length > 0) {
+        const newLeaderFaceId = updatedFaceIds[0];
+        updateData.leaderFaceId = newLeaderFaceId;
+
+        // Fetch the new leader's face data to update leaderFaceData
+        const newLeaderFaceRef = this.db.collection('users').doc(userId)
+                                        .collection('faces').doc(newLeaderFaceId);
+        const newLeaderFaceDoc = await newLeaderFaceRef.get();
+
+        if (newLeaderFaceDoc.exists) {
+          const newLeaderData = newLeaderFaceDoc.data();
+          updateData.leaderFaceData = {
+            fileId: newLeaderData?.fileId || groupData.leaderFaceData?.fileId || '',
+            boundingBox: newLeaderData?.boundingBox || {}
+          };
+          console.log(`    👑 Updated leader face to: ${newLeaderFaceId} (fileId: ${newLeaderData?.fileId})`);
+        } else {
+          console.log(`    ⚠️ Updated leader face to: ${newLeaderFaceId} (face doc not found, keeping old leaderFaceData)`);
+        }
+      }
+      
+      // Update the group with the remaining faces
+      await groupRef.update(updateData);
       
       console.log(`✅ Removed face ${faceId} from group ${groupId}`);
       return true;
@@ -288,6 +783,91 @@ export class GroupManager {
       console.error('Error removing face from group:', error);
       throw error;
     }
+  }
+
+  /**
+   * Add a face to an existing group (public API method)
+   */
+  async addFaceToExistingGroup(
+    userId: string,
+    groupId: string,
+    faceId: string,
+    fileId: string,
+    boundingBox?: any,
+    confidence?: number
+  ): Promise<boolean> {
+    try {
+      const groupRef = this.db.collection('users').doc(userId)
+                             .collection('faceGroups').doc(groupId);
+
+      // Update group FIRST - arrayUnion is atomic and handles duplicates automatically
+      // This prevents race conditions when multiple operations try to add the same face
+      await groupRef.update({
+        faceIds: FieldValue.arrayUnion(faceId),
+        fileIds: FieldValue.arrayUnion(fileId),
+        updatedAt: FieldValue.serverTimestamp()
+      });
+
+      // Only create face document if group update succeeded
+      // This prevents orphan face documents if group doesn't exist
+      await this.createFaceDocument(userId, faceId, groupId, fileId, boundingBox, confidence);
+
+      console.log(`✅ Added face ${faceId} to group ${groupId} (idempotent)`);
+      return true;
+    } catch (error: any) {
+      if (error.code === 'not-found') {
+        console.warn(`Cannot add face ${faceId} - group ${groupId} does not exist`);
+        return false;
+      }
+      console.error('Error adding face to group:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new group with specific faces (public method for API)
+   */
+  async createGroupWithFaces(userId: string, faces: any[], groupName?: string): Promise<string> {
+    // Extract face IDs and file IDs
+    const faceIds = faces.map(f => f.faceId);
+    const fileIds = [...new Set(faces.map(f => f.fileId).filter(Boolean))];
+    
+    console.log(`[WORKFLOW-BACKEND] Firestore Write - Creating group:`, {
+      userId,
+      faceIds,
+      fileIds,
+      faceCount: faceIds.length,
+      groupName
+    });
+    
+    const groupId = this.generateGroupId();
+    const groupRef = this.db.collection('users').doc(userId)
+                           .collection('faceGroups').doc(groupId);
+    
+    const groupData: Partial<FaceGroup> = {
+      groupId,
+      groupName: groupName || `Group ${groupId.substring(0, 8)}`,
+      faceIds,
+      leaderFaceId: faceIds[0],  // First face is the leader
+      leaderFaceData: {
+        fileId: fileIds[0] || 'manual',
+        boundingBox: faces[0]?.boundingBox || {}
+      },
+      fileIds: fileIds.length > 0 ? fileIds : ['manual'],
+      faceCount: faceIds.length,
+      status: 'unreviewed',
+      createdAt: FieldValue.serverTimestamp() as any,
+      updatedAt: FieldValue.serverTimestamp() as any
+    };
+    
+    console.log(`[WORKFLOW-BACKEND] Firestore Document to write:`, {
+      path: `users/${userId}/faceGroups/${groupId}`,
+      document: groupData
+    });
+    
+    await groupRef.set(groupData);
+    console.log(`[WORKFLOW-BACKEND] ✅ Successfully wrote to Firestore: ${groupId}`);
+    return groupId;
   }
 
   /**
@@ -311,6 +891,117 @@ export class GroupManager {
       console.error('Error deleting group:', error);
       throw error;
     }
+  }
+
+  /**
+   * Cascade cleanup: delete faces and update groups when a file is deleted.
+   * Removes face documents from Firestore, faces from AWS Rekognition,
+   * and updates/deletes affected face groups.
+   */
+  async cleanupFacesByFile(userId: string, fileId: string): Promise<{
+    facesDeleted: number;
+    groupsUpdated: number;
+    groupsDeleted: number;
+    awsFacesDeleted: number;
+  }> {
+    console.log(`\n🧹 cleanupFacesByFile: userId=${userId}, fileId=${fileId}`);
+
+    const stats = {
+      facesDeleted: 0,
+      groupsUpdated: 0,
+      groupsDeleted: 0,
+      awsFacesDeleted: 0
+    };
+
+    // 1. Find all faces from this file
+    const facesSnapshot = await this.db
+      .collection('users').doc(userId)
+      .collection('faces')
+      .where('fileId', '==', fileId)
+      .get();
+
+    if (facesSnapshot.empty) {
+      console.log('  No faces found for this file');
+      return stats;
+    }
+
+    const faceIdsToDelete = facesSnapshot.docs.map(doc => doc.id);
+    console.log(`  Found ${faceIdsToDelete.length} faces to delete`);
+
+    // 2. Delete from AWS Rekognition (uses faceIds as FaceIds)
+    try {
+      const rekognition = this.getAWSClient();
+      const deleteCommand = new DeleteFacesCommand({
+        CollectionId: `face_coll_${userId}`,
+        FaceIds: faceIdsToDelete
+      });
+
+      const awsResponse = await rekognition.send(deleteCommand);
+      stats.awsFacesDeleted = awsResponse.DeletedFaces?.length || 0;
+      console.log(`  Deleted ${stats.awsFacesDeleted} faces from AWS Rekognition`);
+    } catch (awsError: any) {
+      // Continue with Firestore cleanup even if AWS fails
+      console.error(`  AWS cleanup failed (continuing): ${awsError.message}`);
+    }
+
+    // 3. Find and update groups containing these faces
+    const faceIdSet = new Set(faceIdsToDelete);
+    const groupsSnapshot = await this.db
+      .collection('users').doc(userId)
+      .collection('faceGroups')
+      .where('fileIds', 'array-contains', fileId)
+      .get();
+
+    for (const groupDoc of groupsSnapshot.docs) {
+      const groupData = groupDoc.data() as FaceGroup;
+      const updatedFaceIds = (groupData.faceIds || []).filter(id => !faceIdSet.has(id));
+      const updatedFileIds = (groupData.fileIds || []).filter(id => id !== fileId);
+
+      if (updatedFaceIds.length === 0) {
+        // Group is now empty - delete it
+        await groupDoc.ref.delete();
+        stats.groupsDeleted++;
+        console.log(`  Deleted empty group ${groupDoc.id}`);
+      } else if (updatedFaceIds.length < (groupData.faceIds || []).length) {
+        // Group still has faces - update it
+        const updateData: any = {
+          faceIds: updatedFaceIds,
+          fileIds: updatedFileIds,
+          faceCount: updatedFaceIds.length,
+          updatedAt: FieldValue.serverTimestamp()
+        };
+
+        // Update leader if it was one of the deleted faces
+        if (faceIdSet.has(groupData.leaderFaceId || '')) {
+          updateData.leaderFaceId = updatedFaceIds[0];
+          // Try to get new leader's face data
+          const newLeaderDoc = await this.db.collection('users').doc(userId)
+            .collection('faces').doc(updatedFaceIds[0]).get();
+          if (newLeaderDoc.exists) {
+            const newLeaderData = newLeaderDoc.data();
+            updateData.leaderFaceData = {
+              fileId: newLeaderData?.fileId || '',
+              boundingBox: newLeaderData?.boundingBox || {}
+            };
+          }
+        }
+
+        await groupDoc.ref.update(updateData);
+        stats.groupsUpdated++;
+        console.log(`  Updated group ${groupDoc.id}: ${(groupData.faceIds || []).length} -> ${updatedFaceIds.length} faces`);
+      }
+    }
+
+    // 4. Delete face documents from Firestore
+    const batch = this.db.batch();
+    for (const faceDoc of facesSnapshot.docs) {
+      batch.delete(faceDoc.ref);
+    }
+    await batch.commit();
+    stats.facesDeleted = faceIdsToDelete.length;
+
+    console.log(`  Cleanup complete:`, stats);
+    return stats;
   }
 
   async clearAllGroups(userId: string): Promise<number> {

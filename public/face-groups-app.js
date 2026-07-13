@@ -159,7 +159,10 @@ async function loadGroups() {
 function displayGroups(groups) {
     const groupsGrid = document.getElementById('groupsGrid');
     
-    if (!groups || groups.length === 0) {
+    // Filter out empty groups before displaying
+    const nonEmptyGroups = groups.filter(group => group.faceIds && group.faceIds.length > 0);
+    
+    if (!nonEmptyGroups || nonEmptyGroups.length === 0) {
         groupsGrid.innerHTML = `
             <div class="empty-state">
                 <div class="empty-icon">📁</div>
@@ -171,7 +174,7 @@ function displayGroups(groups) {
     }
     
     let html = '';
-    groups.forEach((group, index) => {
+    nonEmptyGroups.forEach((group, index) => {
         const groupNum = index + 1;
         // Remove duplicate face IDs within each group
         const originalFaceIds = group.faceIds || [];
@@ -212,7 +215,9 @@ function displayGroups(groups) {
                     }).join('')}
                 </div>
                 <div class="group-info" style="font-size: 12px; color: #6b7280; margin: 10px 0;">
-                    Files: ${group.fileIds ? group.fileIds.join(', ') : 'Unknown'}
+                    Files: ${group.fileIds && group.fileIds.length > 0 ? 
+                        `${group.fileIds.length} file(s)` : 
+                        'Fetching file info...'}
                 </div>
                 <div class="group-actions">
                     <button class="btn btn-secondary" onclick="splitGroup('${group.groupId}')">
@@ -296,6 +301,16 @@ function generateFacePlaceholder(faceId, fileId) {
     // If we have cached face data, use it to get the correct fileId
     if (faceData) {
         fileId = faceData.fileId;
+    }
+    
+    // If still no fileId, we can't display the image
+    if (!fileId) {
+        console.warn(`No fileId available for face ${faceId}`);
+        return `
+            <div style="width: 100%; height: 100%; background: #f3f4f6; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #999;">
+                No image
+            </div>
+        `;
     }
     
     console.log(`Generating face placeholder for faceId: ${faceId}, fileId: ${fileId}`);
