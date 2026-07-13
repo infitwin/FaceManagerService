@@ -87,8 +87,12 @@ export class GroupManager {
       const command = new SearchFacesCommand({
         CollectionId: `face_coll_${userId}`,
         FaceId: faceId,
-        FaceMatchThreshold: 85.0,  // Using 85% threshold for better grouping
-        MaxFaces: 20  // Get more matches for better transitivity
+        // GH-744: 85% chained unrelated crowd faces into mega-clusters
+        // (field-verified). 97% is identity-grade; transitivity amplifies
+        // any looseness, so err strict — a missed match splits a person
+        // (recoverable), a false match corrupts families (it isn't).
+        FaceMatchThreshold: 97.0,
+        MaxFaces: 20
       });
       
       const response = await rekognition.send(command);
@@ -269,13 +273,28 @@ export class GroupManager {
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: group.groupId });
           
         } else {
-          // Multiple groups found - MERGE them (key to transitivity!)
-          console.log(`  ⚡ Merging ${existingGroups.length} groups - faces belong to same person!`);
-          const primaryGroupId = existingGroups[0].groupId;
+          // Multiple groups found. GH-744: a single bridging face was enough
+          // to merge whole groups — one false match corrupted entire families
+          // (field-verified: unrelated crowd faces chained into mega-clusters).
+          // Now a group only merges when >=2 INDEPENDENT matched faces support
+          // it; single-edge groups are left intact and the new face joins the
+          // group with the strongest support.
+          const support = new Map<string, number>();
+          for (const g of existingGroups) {
+            const n = (g.faceIds || []).filter((fid: string) =>
+              matchedFaceIds.includes(fid)).length;
+            support.set(g.groupId, n);
+          }
+          const ranked = [...existingGroups].sort((a, b) =>
+            (support.get(b.groupId) || 0) - (support.get(a.groupId) || 0));
+          const primaryGroupId = ranked[0].groupId;
+          const mergeable = ranked.slice(1).filter(
+            (g) => (support.get(g.groupId) || 0) >= 2);
+          const skipped = ranked.slice(1).length - mergeable.length;
+          console.log(`  ⚡ Group merge: primary ${primaryGroupId}, merging ${mergeable.length}, keeping ${skipped} single-edge group(s) separate (GH-744)`);
 
-          // Merge all secondary groups into primary
-          for (let i = 1; i < existingGroups.length; i++) {
-            await this.mergeGroups(userId, primaryGroupId, existingGroups[i].groupId);
+          for (const g of mergeable) {
+            await this.mergeGroups(userId, primaryGroupId, g.groupId);
           }
 
           // Get updated primary group after merge to check if face already present
