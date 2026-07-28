@@ -273,12 +273,23 @@ export class GroupManager {
           fileUpdates.push({ fileId, faceId: face.faceId, groupId: group.groupId });
           
         } else {
-          // Multiple groups found. GH-744: a single bridging face was enough
-          // to merge whole groups — one false match corrupted entire families
-          // (field-verified: unrelated crowd faces chained into mega-clusters).
-          // Now a group only merges when >=2 INDEPENDENT matched faces support
-          // it; single-edge groups are left intact and the new face joins the
-          // group with the strongest support.
+          // Multiple groups found — the new face looks like faces in more than
+          // one existing cluster. This is AMBIGUOUS, and the GH-744 ">=2 support
+          // then merge" rule still corrupted families: for lookalike relatives
+          // (mother/daughter) one photo genuinely matches BOTH their clusters at
+          // 97%+ with >=2 supporting faces, so the guard fired and fused two
+          // people into one cluster (field case: Veronika absorbed into Kristina,
+          // Tim 2026-07-28).
+          //
+          // Fix: NEVER fuse established clusters on a bridging face. This file's
+          // own principle — "a missed match splits a person (recoverable), a
+          // false match corrupts families (it isn't)" — demands erring apart.
+          // Assign the new face to the best-supported cluster and leave every
+          // other cluster INTACT. Lookalikes stay separate and the "Who is this?"
+          // question flow lets the human disambiguate them (show one, name it,
+          // show the other) instead of the algorithm guessing. A genuine
+          // same-person split is recoverable: both clusters get named the same
+          // person, which reunites them downstream.
           const support = new Map<string, number>();
           for (const g of existingGroups) {
             const n = (g.faceIds || []).filter((fid: string) =>
@@ -288,14 +299,8 @@ export class GroupManager {
           const ranked = [...existingGroups].sort((a, b) =>
             (support.get(b.groupId) || 0) - (support.get(a.groupId) || 0));
           const primaryGroupId = ranked[0].groupId;
-          const mergeable = ranked.slice(1).filter(
-            (g) => (support.get(g.groupId) || 0) >= 2);
-          const skipped = ranked.slice(1).length - mergeable.length;
-          console.log(`  ⚡ Group merge: primary ${primaryGroupId}, merging ${mergeable.length}, keeping ${skipped} single-edge group(s) separate (GH-744)`);
-
-          for (const g of mergeable) {
-            await this.mergeGroups(userId, primaryGroupId, g.groupId);
-          }
+          const others = ranked.slice(1).map((g) => g.groupId);
+          console.log(`  🛡️ Ambiguous face matched ${existingGroups.length} clusters — assigning to strongest (${primaryGroupId}); NOT fusing ${others.length} other(s) [${others.join(', ')}]. Lookalike/family guard (Tim 2026-07-28): the human disambiguates via 'Who is this?', the algorithm never fuses two clusters on a bridging face.`);
 
           // Get updated primary group after merge to check if face already present
           const mergedGroup = await this.getGroup(userId, primaryGroupId);
