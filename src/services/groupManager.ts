@@ -805,12 +805,29 @@ export class GroupManager {
       const groupRef = this.db.collection('users').doc(userId)
                              .collection('faceGroups').doc(groupId);
 
-      // Update group FIRST - arrayUnion is atomic and handles duplicates automatically
-      // This prevents race conditions when multiple operations try to add the same face
-      await groupRef.update({
-        faceIds: FieldValue.arrayUnion(faceId),
-        fileIds: FieldValue.arrayUnion(fileId),
-        updatedAt: FieldValue.serverTimestamp()
+      // Transaction: read → append (deduped) → set faceCount to the true length.
+      // The old arrayUnion path never updated faceCount, so every group grown
+      // face-by-face (the normal path) stayed at faceCount:1 forever — which
+      // skewed all downstream importance/priority ranking. The transaction also
+      // serializes concurrent adds to the same group (16k-photo import races).
+      await this.db.runTransaction(async (tx) => {
+        const snap = await tx.get(groupRef);
+        if (!snap.exists) {
+          const err: any = new Error(`group ${groupId} not found`);
+          err.code = 'not-found';
+          throw err;
+        }
+        const data = snap.data() || {};
+        const faceIds: string[] = Array.isArray(data.faceIds) ? data.faceIds : [];
+        const fileIds: string[] = Array.isArray(data.fileIds) ? data.fileIds : [];
+        const newFaceIds = faceIds.includes(faceId) ? faceIds : [...faceIds, faceId];
+        const newFileIds = fileIds.includes(fileId) ? fileIds : [...fileIds, fileId];
+        tx.update(groupRef, {
+          faceIds: newFaceIds,
+          fileIds: newFileIds,
+          faceCount: newFaceIds.length,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
       });
 
       // Only create face document if group update succeeded
