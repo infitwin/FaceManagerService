@@ -80,34 +80,54 @@ export class GroupManager {
    * This is what the ArtifactProcessor should NOT be doing
    */
   private async searchForMatches(userId: string, faceId: string): Promise<string[]> {
-    try {
-      console.log(`🔍 Searching for matches for face ${faceId} in collection face_coll_${userId}`);
-      
-      const rekognition = this.getAWSClient();
-      const command = new SearchFacesCommand({
-        CollectionId: `face_coll_${userId}`,
-        FaceId: faceId,
-        // GH-744: 85% chained unrelated crowd faces into mega-clusters
-        // (field-verified). 97% is identity-grade; transitivity amplifies
-        // any looseness, so err strict — a missed match splits a person
-        // (recoverable), a false match corrupts families (it isn't).
-        FaceMatchThreshold: 97.0,
-        MaxFaces: 20
-      });
-      
-      const response = await rekognition.send(command);
-      
-      // Extract matched face IDs
-      const matchedFaceIds = response.FaceMatches
-        ?.map(match => match.Face?.FaceId)
-        .filter((id): id is string => id !== undefined && id !== faceId) || [];
-      
-      console.log(`✅ Face ${faceId} matches ${matchedFaceIds.length} other faces:`, matchedFaceIds);
-      return matchedFaceIds;
-    } catch (error) {
-      console.error(`❌ Error searching for face matches: ${error}`);
-      return [];
+    // A bulk import fires thousands of SearchFaces near-simultaneously and
+    // exceeds Rekognition's per-region TPS. The old code caught the throttle
+    // and returned [] — indistinguishable from "no matches" — so every
+    // throttled face became its own singleton group (mass cluster
+    // fragmentation). Retry throttles with exponential backoff; only genuine
+    // no-match / non-throttle errors return [].
+    const maxRetries = 5;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const rekognition = this.getAWSClient();
+        const command = new SearchFacesCommand({
+          CollectionId: `face_coll_${userId}`,
+          FaceId: faceId,
+          // GH-744: 85% chained unrelated crowd faces into mega-clusters
+          // (field-verified). 97% is identity-grade; transitivity amplifies
+          // any looseness, so err strict — a missed match splits a person
+          // (recoverable), a false match corrupts families (it isn't).
+          FaceMatchThreshold: 97.0,
+          MaxFaces: 20
+        });
+        const response = await rekognition.send(command);
+        const matchedFaceIds = response.FaceMatches
+          ?.map(match => match.Face?.FaceId)
+          .filter((id): id is string => id !== undefined && id !== faceId) || [];
+        console.log(`✅ Face ${faceId} matches ${matchedFaceIds.length} other faces`);
+        return matchedFaceIds;
+      } catch (error: any) {
+        const name = error?.name || error?.__type || '';
+        const throttled = /Throttl|ProvisionedThroughput|TooManyRequests/i.test(name)
+          || error?.$metadata?.httpStatusCode === 429;
+        if (throttled && attempt < maxRetries) {
+          const delay = Math.min(4000, 150 * 2 ** attempt) + Math.floor(Math.random() * 150);
+          console.warn(`⏳ SearchFaces throttled for ${faceId}; retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        if (throttled) {
+          // Exhausted retries under sustained throttle — log DISTINCTLY (a
+          // consolidation pass can later merge the resulting singleton) rather
+          // than hiding it as a normal no-match.
+          console.error(`❌ SearchFaces THROTTLED, retries exhausted for ${faceId} — face left as singleton, needs consolidation`);
+          return [];
+        }
+        console.error(`❌ Error searching for face matches (${faceId}): ${error}`);
+        return [];
+      }
     }
+    return [];
   }
 
   /**
