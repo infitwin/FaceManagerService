@@ -714,6 +714,98 @@ export class GroupManager {
   }
 
   /**
+   * SearchFaces variant for NAME SUGGESTIONS (not clustering). Uses a LOWER
+   * threshold (clustering already merged at 97%, so a high-threshold search only
+   * returns the face's own cluster) and a high MaxFaces, and returns similarity
+   * scores. Reuses the throttle backoff.
+   */
+  private async searchFacesWithSimilarity(
+    userId: string, faceId: string
+  ): Promise<Array<{ faceId: string; similarity: number }>> {
+    const maxRetries = 4;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const rekognition = this.getAWSClient();
+        const command = new SearchFacesCommand({
+          CollectionId: `face_coll_${userId}`,
+          FaceId: faceId,
+          FaceMatchThreshold: 75.0, // lower than clustering (97) to surface cross-cluster candidates
+          MaxFaces: 100
+        });
+        const response = await rekognition.send(command);
+        return (response.FaceMatches || [])
+          .map(m => ({ faceId: m.Face?.FaceId || '', similarity: m.Similarity || 0 }))
+          .filter(m => m.faceId && m.faceId !== faceId);
+      } catch (error: any) {
+        const name = error?.name || error?.__type || '';
+        const throttled = /Throttl|ProvisionedThroughput|TooManyRequests/i.test(name)
+          || error?.$metadata?.httpStatusCode === 429;
+        if (throttled && attempt < maxRetries) {
+          const delay = Math.min(4000, 150 * 2 ** attempt) + Math.floor(Math.random() * 150);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        console.error(`❌ name-suggestion SearchFaces failed (${faceId}): ${error}`);
+        return [];
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Best-guess name suggestions for an UNNAMED face cluster: compare a few of its
+   * faces against ALREADY-NAMED clusters and return the top candidate names with
+   * AWS similarity. Powers the app's "Do you know who this is? John (84%) …" UI.
+   * Fail-open: returns [] on any error so the caller shows a plain name field.
+   */
+  async getNameSuggestions(
+    userId: string, groupId: string, maxSuggestions = 3
+  ): Promise<Array<{ personName: string; similarity: number; supportingGroupId: string }>> {
+    const target = await this.getGroup(userId, groupId);
+    if (!target || !Array.isArray(target.faceIds) || target.faceIds.length === 0) return [];
+    const ownFaceIds = new Set(target.faceIds);
+
+    // Build faceId -> {name, groupId} from NAMED groups only (reliable: avoids the
+    // stale per-face groupId problem). Named groups are a small subset.
+    const namedSnap = await this.db.collection('users').doc(userId)
+      .collection('faceGroups').orderBy('personName').get();
+    const faceToName = new Map<string, { name: string; gid: string }>();
+    namedSnap.forEach((doc: any) => {
+      const d = doc.data() || {};
+      const name = (d.personName || '').trim();
+      if (!name) return;
+      (d.faceIds || []).forEach((fid: string) => {
+        if (!ownFaceIds.has(fid) && !faceToName.has(fid)) faceToName.set(fid, { name, gid: doc.id });
+      });
+    });
+    if (faceToName.size === 0) return [];
+
+    // Probe up to 3 faces from the target cluster; aggregate MAX similarity per name.
+    const probe = target.faceIds.slice(0, 3);
+    const best = new Map<string, { similarity: number; gid: string }>();
+    for (const fid of probe) {
+      const matches = await this.searchFacesWithSimilarity(userId, fid);
+      for (const m of matches) {
+        if (ownFaceIds.has(m.faceId)) continue;
+        const hit = faceToName.get(m.faceId);
+        if (!hit) continue;
+        const cur = best.get(hit.name);
+        if (!cur || m.similarity > cur.similarity) best.set(hit.name, { similarity: m.similarity, gid: hit.gid });
+      }
+    }
+
+    return Array.from(best.entries())
+      .map(([personName, v]) => ({
+        personName,
+        similarity: Math.round(v.similarity * 10) / 10,
+        supportingGroupId: v.gid
+      }))
+      .filter(c => c.similarity >= 80) // suppress low-confidence noise (anchoring a wrong name is worse than none)
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, maxSuggestions);
+  }
+
+  /**
    * Update file document with group IDs
    */
   private async updateFileWithGroupIds(userId: string, fileId: string, updates: FileFaceUpdate[]): Promise<void> {

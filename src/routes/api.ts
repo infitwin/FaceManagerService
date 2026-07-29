@@ -367,6 +367,26 @@ router.get('/groups/:userId/:groupId', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/groups/:userId/:groupId/name-suggestions
+ * Best-guess names for an UNNAMED cluster: AWS SearchFaces against already-named
+ * clusters. Returns [{ personName, similarity, supportingGroupId }] (top 3, >=80%).
+ * Fail-open — an empty list just means the app shows a plain "type a name" field.
+ */
+router.get('/groups/:userId/:groupId/name-suggestions', async (req: Request, res: Response) => {
+  try {
+    const { userId, groupId } = req.params;
+    const suggestions = await groupManager.getNameSuggestions(userId, groupId);
+    res.json({ success: true, groupId, suggestions });
+  } catch (error: any) {
+    console.error('Error getting name suggestions:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to get name suggestions'
+    });
+  }
+});
+
+/**
  * POST /api/groups/:userId
  * Create a new group with faces
  */
