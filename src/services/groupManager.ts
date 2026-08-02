@@ -729,7 +729,12 @@ export class GroupManager {
         const command = new SearchFacesCommand({
           CollectionId: `face_coll_${userId}`,
           FaceId: faceId,
-          FaceMatchThreshold: 75.0, // lower than clustering (97) to surface cross-cluster candidates
+          // Tim 2026-08-02: surface the CLOSEST named matches even at low
+          // confidence — a frequent face that doesn't clear a high bar against
+          // any named person was returning NO guess at all. The caller shows
+          // each guess with its similarity %, so the user judges (a weak
+          // "John 40%?" is more useful than an empty "type a name" box).
+          FaceMatchThreshold: 1.0,
           MaxFaces: 100
         });
         const response = await rekognition.send(command);
@@ -800,7 +805,10 @@ export class GroupManager {
         similarity: Math.round(v.similarity * 10) / 10,
         supportingGroupId: v.gid
       }))
-      .filter(c => c.similarity >= 80) // suppress low-confidence noise (anchoring a wrong name is worse than none)
+      // Tim 2026-08-02: show the top-N closest named matches regardless of
+      // confidence (the app renders each with its % so the user judges). The
+      // previous >=80 cutoff meant a face that didn't strongly match any named
+      // person showed NO guess at all — the opposite of what's wanted.
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, maxSuggestions);
   }
