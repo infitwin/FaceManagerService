@@ -735,7 +735,12 @@ export class GroupManager {
           // each guess with its similarity %, so the user judges (a weak
           // "John 40%?" is more useful than an empty "type a name" box).
           FaceMatchThreshold: 1.0,
-          MaxFaces: 100
+          // Tim 2026-08-02: return the top-3 named guesses, not just one. A
+          // probe face's nearest matches are dominated by the cluster's OWN
+          // faces (a big cluster has 100+), which crowded named people out of
+          // a MaxFaces:100 window — so only ONE named person ever surfaced.
+          // Widen the window so other named people are reached and aggregated.
+          MaxFaces: 1000
         });
         const response = await rekognition.send(command);
         return (response.FaceMatches || [])
@@ -805,10 +810,11 @@ export class GroupManager {
         similarity: Math.round(v.similarity * 10) / 10,
         supportingGroupId: v.gid
       }))
-      // Tim 2026-08-02: show the top-N closest named matches regardless of
-      // confidence (the app renders each with its % so the user judges). The
-      // previous >=80 cutoff meant a face that didn't strongly match any named
-      // person showed NO guess at all — the opposite of what's wanted.
+      // Tim 2026-08-02: show the top-N closest named matches (the app renders
+      // each with its % so the user judges), not just the single best. The old
+      // >=80 cutoff hid every partial match; a small >=10 floor only drops pure
+      // noise so the shortlist stays real.
+      .filter(c => c.similarity >= 10)
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, maxSuggestions);
   }
